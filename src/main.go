@@ -61,6 +61,6 @@ func build(entry *C.char, out *C.char, externals *C.char) *C.char {
 }
 
 func main() {
-	result := C.GoString(build(C.CString("test/myapp/index.js"), C.CString("bundle.js"), C.CString("")));
-	println(result)
+	// result := C.GoString(build(C.CString("test/myapp/index.js"), C.CString("bundle.js"), C.CString("")));
+	// println(result)
 }
