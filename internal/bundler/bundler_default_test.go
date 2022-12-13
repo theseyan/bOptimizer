@@ -5,11 +5,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/theseyan/boptimizer/internal/compat"
-	"github.com/theseyan/boptimizer/internal/config"
-	"github.com/theseyan/boptimizer/internal/helpers"
-	"github.com/theseyan/boptimizer/internal/js_ast"
-	"github.com/theseyan/boptimizer/internal/logger"
+	"github.com/evanw/esbuild/internal/compat"
+	"github.com/evanw/esbuild/internal/config"
+	"github.com/evanw/esbuild/internal/helpers"
+	"github.com/evanw/esbuild/internal/js_ast"
+	"github.com/evanw/esbuild/internal/logger"
 )
 
 var default_suite = suite{
@@ -449,8 +449,8 @@ func TestJSXImportsCommonJS(t *testing.T) {
 		options: config.Options{
 			Mode: config.ModeBundle,
 			JSX: config.JSXOptions{
-				Factory:  config.JSXExpr{Parts: []string{"elem"}},
-				Fragment: config.JSXExpr{Parts: []string{"frag"}},
+				Factory:  config.DefineExpr{Parts: []string{"elem"}},
+				Fragment: config.DefineExpr{Parts: []string{"frag"}},
 			},
 			AbsOutputFile: "/out.js",
 		},
@@ -473,8 +473,8 @@ func TestJSXImportsES6(t *testing.T) {
 		options: config.Options{
 			Mode: config.ModeBundle,
 			JSX: config.JSXOptions{
-				Factory:  config.JSXExpr{Parts: []string{"elem"}},
-				Fragment: config.JSXExpr{Parts: []string{"frag"}},
+				Factory:  config.DefineExpr{Parts: []string{"elem"}},
+				Fragment: config.DefineExpr{Parts: []string{"frag"}},
 			},
 			AbsOutputFile: "/out.js",
 		},
@@ -529,12 +529,94 @@ func TestJSXConstantFragments(t *testing.T) {
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.js",
 			JSX: config.JSXOptions{
-				Fragment: config.JSXExpr{
+				Fragment: config.DefineExpr{
 					Constant: &js_ast.EString{Value: helpers.StringToUTF16("]")},
 				},
 			},
 		},
 		expectedScanLog: `string-template.jsx: WARNING: Invalid JSX fragment: ` + "``" + `
+`,
+	})
+}
+
+func TestJSXAutomaticImportsCommonJS(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.jsx": `
+				import {jsx, Fragment} from './custom-react'
+				console.log(<div jsx={jsx}/>, <><Fragment/></>)
+			`,
+			"/custom-react.js": `
+				module.exports = {}
+			`,
+		},
+		entryPaths: []string{"/entry.jsx"},
+		options: config.Options{
+			Mode: config.ModeBundle,
+			JSX: config.JSXOptions{
+				AutomaticRuntime: true,
+			},
+			ExternalSettings: config.ExternalSettings{
+				PreResolve: config.ExternalMatchers{Exact: map[string]bool{
+					"react/jsx-runtime": true,
+				}},
+			},
+			AbsOutputFile: "/out.js",
+		},
+	})
+}
+
+func TestJSXAutomaticImportsES6(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.jsx": `
+				import {jsx, Fragment} from './custom-react'
+				console.log(<div jsx={jsx}/>, <><Fragment/></>)
+			`,
+			"/custom-react.js": `
+				export function jsx() {}
+				export function Fragment() {}
+			`,
+		},
+		entryPaths: []string{"/entry.jsx"},
+		options: config.Options{
+			Mode: config.ModeBundle,
+			JSX: config.JSXOptions{
+				AutomaticRuntime: true,
+			},
+			ExternalSettings: config.ExternalSettings{
+				PreResolve: config.ExternalMatchers{Exact: map[string]bool{
+					"react/jsx-runtime": true,
+				}},
+			},
+			AbsOutputFile: "/out.js",
+		},
+	})
+}
+
+func TestJSXAutomaticSyntaxInJS(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				console.log(<div/>)
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode: config.ModeBundle,
+			JSX: config.JSXOptions{
+				AutomaticRuntime: true,
+			},
+			ExternalSettings: config.ExternalSettings{
+				PreResolve: config.ExternalMatchers{Exact: map[string]bool{
+					"react/jsx-runtime": true,
+				}},
+			},
+			AbsOutputFile: "/out.js",
+		},
+		expectedScanLog: `entry.js: ERROR: The JSX syntax extension is not currently enabled
+NOTE: The esbuild loader for this file is currently set to "js" but it must be set to "jsx" to be able to parse JSX syntax. ` +
+			`You can use 'Loader: map[string]api.Loader{".js": api.LoaderJSX}' to do that.
 `,
 	})
 }
@@ -1312,6 +1394,24 @@ func TestHashbangNoBundle(t *testing.T) {
 	})
 }
 
+func TestHashbangBannerUseStrictOrder(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `#! in file
+				'use strict'
+				foo()
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/out.js",
+			JSBanner:      "#! from banner",
+			OutputFormat:  config.FormatIIFE,
+		},
+	})
+}
+
 func TestRequireFSBrowser(t *testing.T) {
 	default_suite.expectBundled(t, bundled{
 		files: map[string]string{
@@ -1837,39 +1937,40 @@ func TestThisWithES6Syntax(t *testing.T) {
 			Mode:          config.ModeBundle,
 			AbsOutputFile: "/out.js",
 		},
-		expectedScanLog: `es6-export-abstract-class.ts: WARNING: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
+		debugLogs: true,
+		expectedScanLog: `es6-export-abstract-class.ts: DEBUG: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
 es6-export-abstract-class.ts: NOTE: This file is considered to be an ECMAScript module because of the "export" keyword here:
-es6-export-async-function.js: WARNING: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
+es6-export-async-function.js: DEBUG: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
 es6-export-async-function.js: NOTE: This file is considered to be an ECMAScript module because of the "export" keyword here:
-es6-export-class.js: WARNING: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
+es6-export-class.js: DEBUG: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
 es6-export-class.js: NOTE: This file is considered to be an ECMAScript module because of the "export" keyword here:
-es6-export-clause-from.js: WARNING: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
+es6-export-clause-from.js: DEBUG: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
 es6-export-clause-from.js: NOTE: This file is considered to be an ECMAScript module because of the "export" keyword here:
-es6-export-clause.js: WARNING: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
+es6-export-clause.js: DEBUG: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
 es6-export-clause.js: NOTE: This file is considered to be an ECMAScript module because of the "export" keyword here:
-es6-export-const-enum.ts: WARNING: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
+es6-export-const-enum.ts: DEBUG: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
 es6-export-const-enum.ts: NOTE: This file is considered to be an ECMAScript module because of the "export" keyword here:
-es6-export-default.js: WARNING: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
+es6-export-default.js: DEBUG: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
 es6-export-default.js: NOTE: This file is considered to be an ECMAScript module because of the "export" keyword here:
-es6-export-enum.ts: WARNING: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
+es6-export-enum.ts: DEBUG: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
 es6-export-enum.ts: NOTE: This file is considered to be an ECMAScript module because of the "export" keyword here:
-es6-export-function.js: WARNING: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
+es6-export-function.js: DEBUG: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
 es6-export-function.js: NOTE: This file is considered to be an ECMAScript module because of the "export" keyword here:
-es6-export-import-assign.ts: WARNING: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
+es6-export-import-assign.ts: DEBUG: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
 es6-export-import-assign.ts: NOTE: This file is considered to be an ECMAScript module because of the "export" keyword here:
-es6-export-module.ts: WARNING: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
+es6-export-module.ts: DEBUG: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
 es6-export-module.ts: NOTE: This file is considered to be an ECMAScript module because of the "export" keyword here:
-es6-export-namespace.ts: WARNING: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
+es6-export-namespace.ts: DEBUG: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
 es6-export-namespace.ts: NOTE: This file is considered to be an ECMAScript module because of the "export" keyword here:
-es6-export-star-as.js: WARNING: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
+es6-export-star-as.js: DEBUG: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
 es6-export-star-as.js: NOTE: This file is considered to be an ECMAScript module because of the "export" keyword here:
-es6-export-star.js: WARNING: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
+es6-export-star.js: DEBUG: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
 es6-export-star.js: NOTE: This file is considered to be an ECMAScript module because of the "export" keyword here:
-es6-export-variable.js: WARNING: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
+es6-export-variable.js: DEBUG: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
 es6-export-variable.js: NOTE: This file is considered to be an ECMAScript module because of the "export" keyword here:
-es6-expr-import-meta.js: WARNING: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
+es6-expr-import-meta.js: DEBUG: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
 es6-expr-import-meta.js: NOTE: This file is considered to be an ECMAScript module because of the use of "import.meta" here:
-es6-import-meta.js: WARNING: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
+es6-import-meta.js: DEBUG: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
 es6-import-meta.js: NOTE: This file is considered to be an ECMAScript module because of the use of "import.meta" here:
 `,
 	})
@@ -2090,7 +2191,7 @@ func TestImportReExportES6Issue149(t *testing.T) {
 		options: config.Options{
 			Mode: config.ModeBundle,
 			JSX: config.JSXOptions{
-				Factory: config.JSXExpr{Parts: []string{"h"}},
+				Factory: config.DefineExpr{Parts: []string{"h"}},
 			},
 			AbsOutputFile: "/out.js",
 			ExternalSettings: config.ExternalSettings{
@@ -2334,10 +2435,27 @@ func TestImportAbsPathAsFile(t *testing.T) {
 }
 
 func TestImportAbsPathAsDir(t *testing.T) {
-	default_suite.expectBundled(t, bundled{
+	default_suite.expectBundledUnix(t, bundled{
 		files: map[string]string{
 			"/Users/user/project/entry.js": `
 				import pkg from '/Users/user/project/node_modules/pkg'
+				console.log(pkg)
+			`,
+			"/Users/user/project/node_modules/pkg/index.js": `
+				export default 123
+			`,
+		},
+		entryPaths: []string{"/Users/user/project/entry.js"},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+		},
+	})
+
+	default_suite.expectBundledWindows(t, bundled{
+		files: map[string]string{
+			"/Users/user/project/entry.js": `
+				import pkg from 'C:\\Users\\user\\project\\node_modules\\pkg'
 				console.log(pkg)
 			`,
 			"/Users/user/project/node_modules/pkg/index.js": `
@@ -2427,6 +2545,27 @@ func TestExternalWithWildcard(t *testing.T) {
 entry.js: ERROR: Could not resolve "/dir/file.gif"
 entry.js: ERROR: Could not resolve "./file.ping"
 `,
+	})
+}
+
+func TestExternalWildcardDoesNotMatchEntryPoint(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			// The "*" pattern should not apply to this entry point
+			"/entry.js": `
+				import "foo"
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/out.js",
+			ExternalSettings: config.ExternalSettings{
+				PreResolve: config.ExternalMatchers{Patterns: []config.WildcardPattern{
+					{},
+				}},
+			},
+		},
 	})
 }
 
@@ -2788,6 +2927,57 @@ func TestUseStrictDirectiveBundleIssue1837(t *testing.T) {
 	})
 }
 
+func TestUseStrictDirectiveBundleIIFEIssue2264(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				'use strict'
+				export let a = 1
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/out.js",
+			OutputFormat:  config.FormatIIFE,
+		},
+	})
+}
+
+func TestUseStrictDirectiveBundleCJSIssue2264(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				'use strict'
+				export let a = 1
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/out.js",
+			OutputFormat:  config.FormatCommonJS,
+		},
+	})
+}
+
+func TestUseStrictDirectiveBundleESMIssue2264(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				'use strict'
+				export let a = 1
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/out.js",
+			OutputFormat:  config.FormatESModule,
+		},
+	})
+}
+
 func TestNoOverwriteInputFileError(t *testing.T) {
 	default_suite.expectBundled(t, bundled{
 		files: map[string]string{
@@ -3007,6 +3197,11 @@ func TestImportMetaCommonJS(t *testing.T) {
 			OutputFormat:  config.FormatCommonJS,
 			AbsOutputFile: "/out.js",
 		},
+		expectedScanLog: `entry.js: WARNING: "import.meta" is not available with the "cjs" output format and will be empty
+NOTE: You need to set the output format to "esm" for "import.meta" to work correctly.
+entry.js: WARNING: "import.meta" is not available with the "cjs" output format and will be empty
+NOTE: You need to set the output format to "esm" for "import.meta" to work correctly.
+`,
 	})
 }
 
@@ -3624,12 +3819,8 @@ bad1.js: ERROR: Cannot assign to import "x"
 NOTE: Imports are immutable in JavaScript. To modify the value of this import, you must export a setter function in the imported file (e.g. "setX") and then import and call that function here instead.
 bad10.js: ERROR: Cannot assign to import "y z"
 NOTE: Imports are immutable in JavaScript. To modify the value of this import, you must export a setter function in the imported file and then import and call that function here instead.
-bad11.js: ERROR: Cannot assign to import "x"
-NOTE: Imports are immutable in JavaScript. To modify the value of this import, you must export a setter function in the imported file (e.g. "setX") and then import and call that function here instead.
 bad11.js: ERROR: Delete of a bare identifier cannot be used in an ECMAScript module
 bad11.js: NOTE: This file is considered to be an ECMAScript module because of the "import" keyword here:
-bad12.js: ERROR: Cannot assign to import "x"
-NOTE: Imports are immutable in JavaScript. To modify the value of this import, you must export a setter function in the imported file (e.g. "setX") and then import and call that function here instead.
 bad12.js: ERROR: Delete of a bare identifier cannot be used in an ECMAScript module
 bad12.js: NOTE: This file is considered to be an ECMAScript module because of the "import" keyword here:
 bad13.js: ERROR: Cannot assign to import "y"
@@ -3658,6 +3849,89 @@ NOTE: Imports are immutable in JavaScript. To modify the value of this import, y
 	})
 }
 
+func TestAssignToImportNoBundle(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			// The cases labeled "uncaught" below are not caught when bundling is
+			// disabled. This is because bundling enables extra transforms and
+			// analysis that isn't done otherwise that then allows these cases
+			// to be caught. Despite these gaps, we still enable the warning
+			// because it's still useful for the cases it does catch.
+
+			"/bad0.js":       `import x from "foo"; x = 1`,
+			"/bad1.js":       `import x from "foo"; x++`,
+			"/bad2.js":       `import x from "foo"; ([x] = 1)`,
+			"/bad3.js":       `import x from "foo"; ({x} = 1)`,
+			"/bad4.js":       `import x from "foo"; ({y: x} = 1)`,
+			"/bad5.js":       `import {x} from "foo"; x++`,
+			"/bad6.js":       `import * as x from "foo"; x++`,
+			"/uncaught7.js":  `import * as x from "foo"; x.y = 1`,
+			"/uncaught8.js":  `import * as x from "foo"; x[y] = 1`,
+			"/uncaught9.js":  `import * as x from "foo"; x['y'] = 1`,
+			"/uncaught10.js": `import * as x from "foo"; x['y z'] = 1`,
+			"/bad11.js":      `import x from "foo"; delete x`,
+			"/bad12.js":      `import {x} from "foo"; delete x`,
+			"/uncaught13.js": `import * as x from "foo"; delete x.y`,
+			"/uncaught14.js": `import * as x from "foo"; delete x['y']`,
+			"/uncaught15.js": `import * as x from "foo"; delete x[y]`,
+
+			"/good0.js": `import x from "foo"; ({y = x} = 1)`,
+			"/good1.js": `import x from "foo"; ({[x]: y} = 1)`,
+			"/good2.js": `import x from "foo"; x.y = 1`,
+			"/good3.js": `import x from "foo"; x[y] = 1`,
+			"/good4.js": `import x from "foo"; x['y'] = 1`,
+			"/good5.js": `import x from "foo"; x['y z'] = 1`,
+		},
+		entryPaths: []string{
+			"/bad0.js",
+			"/bad1.js",
+			"/bad2.js",
+			"/bad3.js",
+			"/bad4.js",
+			"/bad5.js",
+			"/bad6.js",
+			"/uncaught7.js",
+			"/uncaught8.js",
+			"/uncaught9.js",
+			"/uncaught10.js",
+			"/bad11.js",
+			"/bad12.js",
+			"/uncaught13.js",
+			"/uncaught14.js",
+			"/uncaught15.js",
+			"/good0.js",
+			"/good1.js",
+			"/good2.js",
+			"/good3.js",
+			"/good4.js",
+			"/good5.js",
+		},
+		options: config.Options{
+			Mode:          config.ModePassThrough,
+			AbsOutputFile: "/out.js",
+		},
+		expectedScanLog: `bad0.js: WARNING: This assignment will throw because "x" is an import
+NOTE: Imports are immutable in JavaScript. To modify the value of this import, you must export a setter function in the imported file (e.g. "setX") and then import and call that function here instead.
+bad1.js: WARNING: This assignment will throw because "x" is an import
+NOTE: Imports are immutable in JavaScript. To modify the value of this import, you must export a setter function in the imported file (e.g. "setX") and then import and call that function here instead.
+bad11.js: ERROR: Delete of a bare identifier cannot be used in an ECMAScript module
+bad11.js: NOTE: This file is considered to be an ECMAScript module because of the "import" keyword here:
+bad12.js: ERROR: Delete of a bare identifier cannot be used in an ECMAScript module
+bad12.js: NOTE: This file is considered to be an ECMAScript module because of the "import" keyword here:
+bad2.js: WARNING: This assignment will throw because "x" is an import
+NOTE: Imports are immutable in JavaScript. To modify the value of this import, you must export a setter function in the imported file (e.g. "setX") and then import and call that function here instead.
+bad3.js: WARNING: This assignment will throw because "x" is an import
+NOTE: Imports are immutable in JavaScript. To modify the value of this import, you must export a setter function in the imported file (e.g. "setX") and then import and call that function here instead.
+bad4.js: WARNING: This assignment will throw because "x" is an import
+NOTE: Imports are immutable in JavaScript. To modify the value of this import, you must export a setter function in the imported file (e.g. "setX") and then import and call that function here instead.
+bad5.js: WARNING: This assignment will throw because "x" is an import
+NOTE: Imports are immutable in JavaScript. To modify the value of this import, you must export a setter function in the imported file (e.g. "setX") and then import and call that function here instead.
+bad6.js: WARNING: This assignment will throw because "x" is an import
+NOTE: Imports are immutable in JavaScript. To modify the value of this import, you must export a setter function in the imported file (e.g. "setX") and then import and call that function here instead.
+`,
+	})
+}
+
 func TestMinifyArguments(t *testing.T) {
 	default_suite.expectBundled(t, bundled{
 		files: map[string]string{
@@ -3681,12 +3955,13 @@ func TestMinifyArguments(t *testing.T) {
 			Mode:              config.ModeBundle,
 			MinifyIdentifiers: true,
 			AbsOutputFile:     "/out.js",
+			OutputFormat:      config.FormatIIFE,
 		},
 	})
 }
 
 func TestWarningsInsideNodeModules(t *testing.T) {
-	default_suite.expectBundled(t, bundled{
+	default_suite.expectBundledUnix(t, bundled{
 		files: map[string]string{
 			"/entry.js": `
 				import "./dup-case.js";        import "./node_modules/dup-case.js";        import "@plugin/dup-case.js"
@@ -3772,7 +4047,7 @@ delete-super.js: WARNING: Attempting to delete a property of "super" will throw 
 dup-case.js: WARNING: This case clause will never be evaluated because it duplicates an earlier case clause
 dup-case.js: NOTE: The earlier case clause is here:
 equals-nan.js: WARNING: Comparison with NaN using the "===" operator here is always false
-NOTE: Floating-point equality is defined such that NaN is never equal to anything, so "x === NaN" always returns false. You need to use "isNaN(x)" instead to test for NaN.
+NOTE: Floating-point equality is defined such that NaN is never equal to anything, so "x === NaN" always returns false. You need to use "Number.isNaN(x)" instead to test for NaN.
 equals-neg-zero.js: WARNING: Comparison with -0 using the "===" operator will also match 0
 NOTE: Floating-point equality is defined such that 0 and -0 are equal, so "x === -0" returns true for both 0 and -0. You need to use "Object.is(x, -0)" instead to test for -0.
 equals-object.js: WARNING: Comparison using the "===" operator here is always false
@@ -3843,7 +4118,7 @@ entry.js: WARNING: "@scope/missing-pkg" should be marked as external for use wit
 }
 
 func TestInjectMissing(t *testing.T) {
-	default_suite.expectBundled(t, bundled{
+	default_suite.expectBundledUnix(t, bundled{
 		files: map[string]string{
 			"/entry.js": ``,
 		},
@@ -3855,8 +4130,22 @@ func TestInjectMissing(t *testing.T) {
 				"/inject.js",
 			},
 		},
-		expectedScanLog: `ERROR: Could not read from file: /inject.js
-`,
+		expectedScanLog: "ERROR: Could not read from file: /inject.js\n",
+	})
+
+	default_suite.expectBundledWindows(t, bundled{
+		files: map[string]string{
+			"/entry.js": ``,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/out.js",
+			InjectAbsPaths: []string{
+				"/inject.js",
+			},
+		},
+		expectedScanLog: "ERROR: Could not read from file: C:\\inject.js\n",
 	})
 }
 
@@ -3883,18 +4172,18 @@ func TestInjectDuplicate(t *testing.T) {
 func TestInject(t *testing.T) {
 	defines := config.ProcessDefines(map[string]config.DefineData{
 		"chain.prop": {
-			DefineFunc: func(args config.DefineArgs) js_ast.E {
-				return &js_ast.EIdentifier{Ref: args.FindSymbol(args.Loc, "replace")}
+			DefineExpr: &config.DefineExpr{
+				Parts: []string{"replace"},
 			},
 		},
 		"obj.defined": {
-			DefineFunc: func(args config.DefineArgs) js_ast.E {
-				return &js_ast.EString{Value: helpers.StringToUTF16("defined")}
+			DefineExpr: &config.DefineExpr{
+				Constant: &js_ast.EString{Value: helpers.StringToUTF16("defined")},
 			},
 		},
 		"injectedAndDefined": {
-			DefineFunc: func(args config.DefineArgs) js_ast.E {
-				return &js_ast.EString{Value: helpers.StringToUTF16("should be used")}
+			DefineExpr: &config.DefineExpr{
+				Constant: &js_ast.EString{Value: helpers.StringToUTF16("should be used")},
 			},
 		},
 	})
@@ -3963,18 +4252,18 @@ func TestInject(t *testing.T) {
 func TestInjectNoBundle(t *testing.T) {
 	defines := config.ProcessDefines(map[string]config.DefineData{
 		"chain.prop": {
-			DefineFunc: func(args config.DefineArgs) js_ast.E {
-				return &js_ast.EIdentifier{Ref: args.FindSymbol(args.Loc, "replace")}
+			DefineExpr: &config.DefineExpr{
+				Parts: []string{"replace"},
 			},
 		},
 		"obj.defined": {
-			DefineFunc: func(args config.DefineArgs) js_ast.E {
-				return &js_ast.EString{Value: helpers.StringToUTF16("defined")}
+			DefineExpr: &config.DefineExpr{
+				Constant: &js_ast.EString{Value: helpers.StringToUTF16("defined")},
 			},
 		},
 		"injectedAndDefined": {
-			DefineFunc: func(args config.DefineArgs) js_ast.E {
-				return &js_ast.EString{Value: helpers.StringToUTF16("should be used")}
+			DefineExpr: &config.DefineExpr{
+				Constant: &js_ast.EString{Value: helpers.StringToUTF16("should be used")},
 			},
 		},
 	})
@@ -4038,18 +4327,24 @@ func TestInjectNoBundle(t *testing.T) {
 func TestInjectJSX(t *testing.T) {
 	defines := config.ProcessDefines(map[string]config.DefineData{
 		"React.createElement": {
-			DefineFunc: func(args config.DefineArgs) js_ast.E {
-				return &js_ast.EIdentifier{Ref: args.FindSymbol(args.Loc, "el")}
+			DefineExpr: &config.DefineExpr{
+				Parts: []string{"el"},
+			},
+		},
+		"React.Fragment": {
+			DefineExpr: &config.DefineExpr{
+				Parts: []string{"frag"},
 			},
 		},
 	})
 	default_suite.expectBundled(t, bundled{
 		files: map[string]string{
 			"/entry.jsx": `
-				console.log(<div/>)
+				console.log(<><div/></>)
 			`,
 			"/inject.js": `
 				export function el() {}
+				export function frag() {}
 			`,
 		},
 		entryPaths: []string{"/entry.jsx"},
@@ -4214,18 +4509,18 @@ func TestAvoidTDZNoBundle(t *testing.T) {
 func TestDefineImportMeta(t *testing.T) {
 	defines := config.ProcessDefines(map[string]config.DefineData{
 		"import.meta": {
-			DefineFunc: func(args config.DefineArgs) js_ast.E {
-				return &js_ast.ENumber{Value: 1}
+			DefineExpr: &config.DefineExpr{
+				Constant: &js_ast.ENumber{Value: 1},
 			},
 		},
 		"import.meta.foo": {
-			DefineFunc: func(args config.DefineArgs) js_ast.E {
-				return &js_ast.ENumber{Value: 2}
+			DefineExpr: &config.DefineExpr{
+				Constant: &js_ast.ENumber{Value: 2},
 			},
 		},
 		"import.meta.foo.bar": {
-			DefineFunc: func(args config.DefineArgs) js_ast.E {
-				return &js_ast.ENumber{Value: 3}
+			DefineExpr: &config.DefineExpr{
+				Constant: &js_ast.ENumber{Value: 3},
 			},
 		},
 	})
@@ -4258,8 +4553,8 @@ func TestDefineImportMeta(t *testing.T) {
 func TestDefineImportMetaES5(t *testing.T) {
 	defines := config.ProcessDefines(map[string]config.DefineData{
 		"import.meta.x": {
-			DefineFunc: func(args config.DefineArgs) js_ast.E {
-				return &js_ast.ENumber{Value: 1}
+			DefineExpr: &config.DefineExpr{
+				Constant: &js_ast.ENumber{Value: 1},
 			},
 		},
 	})
@@ -4295,18 +4590,18 @@ kept.js: WARNING: "import.meta" is not available in the configured target enviro
 func TestDefineThis(t *testing.T) {
 	defines := config.ProcessDefines(map[string]config.DefineData{
 		"this": {
-			DefineFunc: func(args config.DefineArgs) js_ast.E {
-				return &js_ast.ENumber{Value: 1}
+			DefineExpr: &config.DefineExpr{
+				Constant: &js_ast.ENumber{Value: 1},
 			},
 		},
 		"this.foo": {
-			DefineFunc: func(args config.DefineArgs) js_ast.E {
-				return &js_ast.ENumber{Value: 2}
+			DefineExpr: &config.DefineExpr{
+				Constant: &js_ast.ENumber{Value: 2},
 			},
 		},
 		"this.foo.bar": {
-			DefineFunc: func(args config.DefineArgs) js_ast.E {
-				return &js_ast.ENumber{Value: 3}
+			DefineExpr: &config.DefineExpr{
+				Constant: &js_ast.ENumber{Value: 3},
 			},
 		},
 	})
@@ -4355,6 +4650,186 @@ func TestDefineThis(t *testing.T) {
 			AbsOutputFile: "/out.js",
 			Defines:       &defines,
 		},
+	})
+}
+
+func TestDefineOptionalChain(t *testing.T) {
+	defines := config.ProcessDefines(map[string]config.DefineData{
+		"a.b.c": {
+			DefineExpr: &config.DefineExpr{
+				Constant: &js_ast.ENumber{Value: 1},
+			},
+		},
+	})
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				console.log([
+					a.b.c,
+					a?.b.c,
+					a.b?.c,
+				], [
+					a['b']['c'],
+					a?.['b']['c'],
+					a['b']?.['c'],
+				], [
+					a[b][c],
+					a?.[b][c],
+					a[b]?.[c],
+				])
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/out.js",
+			Defines:       &defines,
+		},
+	})
+}
+
+func TestDefineOptionalChainLowered(t *testing.T) {
+	defines := config.ProcessDefines(map[string]config.DefineData{
+		"a.b.c": {
+			DefineExpr: &config.DefineExpr{
+				Constant: &js_ast.ENumber{Value: 1},
+			},
+		},
+	})
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				console.log([
+					a.b.c,
+					a?.b.c,
+					a.b?.c,
+				], [
+					a['b']['c'],
+					a?.['b']['c'],
+					a['b']?.['c'],
+				], [
+					a[b][c],
+					a?.[b][c],
+					a[b]?.[c],
+				])
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:                  config.ModeBundle,
+			AbsOutputFile:         "/out.js",
+			Defines:               &defines,
+			UnsupportedJSFeatures: compat.OptionalChain,
+		},
+	})
+}
+
+// See: https://github.com/evanw/esbuild/issues/2407
+func TestDefineInfiniteLoopIssue2407(t *testing.T) {
+	defines := config.ProcessDefines(map[string]config.DefineData{
+		"a.b": {
+			DefineExpr: &config.DefineExpr{
+				Parts: []string{"b", "c"},
+			},
+		},
+		"b.c": {
+			DefineExpr: &config.DefineExpr{
+				Parts: []string{"c", "a"},
+			},
+		},
+		"c.a": {
+			DefineExpr: &config.DefineExpr{
+				Parts: []string{"a", "b"},
+			},
+		},
+		"x.y": {
+			DefineExpr: &config.DefineExpr{
+				Parts: []string{"y"},
+			},
+		},
+	})
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				a.b()
+				x.y()
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/out.js",
+			Defines:       &defines,
+		},
+	})
+}
+
+func TestDefineAssignWarning(t *testing.T) {
+	defines := config.ProcessDefines(map[string]config.DefineData{
+		"a": {
+			DefineExpr: &config.DefineExpr{
+				Constant: js_ast.ENullShared,
+			},
+		},
+		"b.c": {
+			DefineExpr: &config.DefineExpr{
+				Constant: js_ast.ENullShared,
+			},
+		},
+		"d": {
+			DefineExpr: &config.DefineExpr{
+				Parts: []string{"ident"},
+			},
+		},
+		"e.f": {
+			DefineExpr: &config.DefineExpr{
+				Parts: []string{"ident"},
+			},
+		},
+		"g": {
+			DefineExpr: &config.DefineExpr{
+				Parts: []string{"dot", "chain"},
+			},
+		},
+		"h.i": {
+			DefineExpr: &config.DefineExpr{
+				Parts: []string{"dot", "chain"},
+			},
+		},
+	})
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/read.js": `
+				console.log(
+					[a, b.c, b['c']],
+					[d, e.f, e['f']],
+					[g, h.i, h['i']],
+				)
+			`,
+			"/write.js": `
+				console.log(
+					[a = 0, b.c = 0, b['c'] = 0],
+					[d = 0, e.f = 0, e['f'] = 0],
+					[g = 0, h.i = 0, h['i'] = 0],
+				)
+			`,
+		},
+		entryPaths: []string{
+			"/read.js",
+			"/write.js",
+		},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+			Defines:      &defines,
+		},
+		expectedScanLog: `write.js: WARNING: Suspicious assignment to defined constant "a"
+NOTE: The expression "a" has been configured to be replaced with a constant using the "define" feature. If this expression is supposed to be a compile-time constant, then it doesn't make sense to assign to it here. Or if this expression is supposed to change at run-time, this "define" substitution should be removed.
+write.js: WARNING: Suspicious assignment to defined constant "b.c"
+NOTE: The expression "b.c" has been configured to be replaced with a constant using the "define" feature. If this expression is supposed to be a compile-time constant, then it doesn't make sense to assign to it here. Or if this expression is supposed to change at run-time, this "define" substitution should be removed.
+write.js: WARNING: Suspicious assignment to defined constant "b['c']"
+NOTE: The expression "b['c']" has been configured to be replaced with a constant using the "define" feature. If this expression is supposed to be a compile-time constant, then it doesn't make sense to assign to it here. Or if this expression is supposed to change at run-time, this "define" substitution should be removed.
+`,
 	})
 }
 
@@ -4663,6 +5138,282 @@ NOTE: Make sure to enable TypeScript's "esModuleInterop" setting so that TypeScr
 	})
 }
 
+func TestJSXThisValueCommonJS(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/factory.jsx": `
+				console.log([
+					<x />,
+					/* @__PURE__ */ this('x', null),
+				])
+				f = function() {
+					console.log([
+						<y />,
+						/* @__PURE__ */ this('y', null),
+					])
+				}
+			`,
+			"/fragment.jsx": `
+				console.log([
+					<>x</>,
+					/* @__PURE__ */ this(this, null, 'x'),
+				]),
+				f = function() {
+					console.log([
+						<>y</>,
+						/* @__PURE__ */ this(this, null, 'y'),
+					])
+				}
+			`,
+		},
+		entryPaths: []string{"/factory.jsx", "/fragment.jsx"},
+		options: config.Options{
+			Mode: config.ModeBundle,
+			JSX: config.JSXOptions{
+				Factory:  config.DefineExpr{Parts: []string{"this"}},
+				Fragment: config.DefineExpr{Parts: []string{"this"}},
+			},
+			AbsOutputDir: "/out",
+		},
+	})
+}
+
+func TestJSXThisValueESM(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/factory.jsx": `
+				console.log([
+					<x />,
+					/* @__PURE__ */ this('x', null),
+				])
+				f = function() {
+					console.log([
+						<y />,
+						/* @__PURE__ */ this('y', null),
+					])
+				}
+				export {}
+			`,
+			"/fragment.jsx": `
+				console.log([
+					<>x</>,
+					/* @__PURE__ */ this(this, null, 'x'),
+				]),
+				f = function() {
+					console.log([
+						<>y</>,
+						/* @__PURE__ */ this(this, null, 'y'),
+					])
+				}
+				export {}
+			`,
+		},
+		entryPaths: []string{"/factory.jsx", "/fragment.jsx"},
+		options: config.Options{
+			Mode: config.ModeBundle,
+			JSX: config.JSXOptions{
+				Factory:  config.DefineExpr{Parts: []string{"this"}},
+				Fragment: config.DefineExpr{Parts: []string{"this"}},
+			},
+			AbsOutputDir: "/out",
+		},
+		debugLogs: true,
+		expectedScanLog: `factory.jsx: DEBUG: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
+factory.jsx: NOTE: This file is considered to be an ECMAScript module because of the "export" keyword here:
+fragment.jsx: DEBUG: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
+fragment.jsx: NOTE: This file is considered to be an ECMAScript module because of the "export" keyword here:
+`,
+	})
+}
+
+func TestJSXThisPropertyCommonJS(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/factory.jsx": `
+				console.log([
+					<x />,
+					/* @__PURE__ */ this.factory('x', null),
+				])
+				f = function() {
+					console.log([
+						<y />,
+						/* @__PURE__ */ this.factory('y', null),
+					])
+				}
+			`,
+			"/fragment.jsx": `
+				console.log([
+					<>x</>,
+					/* @__PURE__ */ this.factory(this.fragment, null, 'x'),
+				]),
+				f = function() {
+					console.log([
+						<>y</>,
+						/* @__PURE__ */ this.factory(this.fragment, null, 'y'),
+					])
+				}
+			`,
+		},
+		entryPaths: []string{"/factory.jsx", "/fragment.jsx"},
+		options: config.Options{
+			Mode: config.ModeBundle,
+			JSX: config.JSXOptions{
+				Factory:  config.DefineExpr{Parts: []string{"this", "factory"}},
+				Fragment: config.DefineExpr{Parts: []string{"this", "fragment"}},
+			},
+			AbsOutputDir: "/out",
+		},
+	})
+}
+
+func TestJSXThisPropertyESM(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/factory.jsx": `
+				console.log([
+					<x />,
+					/* @__PURE__ */ this.factory('x', null),
+				])
+				f = function() {
+					console.log([
+						<y />,
+						/* @__PURE__ */ this.factory('y', null),
+					])
+				}
+				export {}
+			`,
+			"/fragment.jsx": `
+				console.log([
+					<>x</>,
+					/* @__PURE__ */ this.factory(this.fragment, null, 'x'),
+				]),
+				f = function() {
+					console.log([
+						<>y</>,
+						/* @__PURE__ */ this.factory(this.fragment, null, 'y'),
+					])
+				}
+				export {}
+			`,
+		},
+		entryPaths: []string{"/factory.jsx", "/fragment.jsx"},
+		options: config.Options{
+			Mode: config.ModeBundle,
+			JSX: config.JSXOptions{
+				Factory:  config.DefineExpr{Parts: []string{"this", "factory"}},
+				Fragment: config.DefineExpr{Parts: []string{"this", "fragment"}},
+			},
+			AbsOutputDir: "/out",
+		},
+		debugLogs: true,
+		expectedScanLog: `factory.jsx: DEBUG: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
+factory.jsx: NOTE: This file is considered to be an ECMAScript module because of the "export" keyword here:
+fragment.jsx: DEBUG: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
+fragment.jsx: NOTE: This file is considered to be an ECMAScript module because of the "export" keyword here:
+`,
+	})
+}
+
+func TestJSXImportMetaValue(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/factory.jsx": `
+				console.log([
+					<x />,
+					/* @__PURE__ */ import.meta('x', null),
+				])
+				f = function() {
+					console.log([
+						<y />,
+						/* @__PURE__ */ import.meta('y', null),
+					])
+				}
+				export {}
+			`,
+			"/fragment.jsx": `
+				console.log([
+					<>x</>,
+					/* @__PURE__ */ import.meta(import.meta, null, 'x'),
+				]),
+				f = function() {
+					console.log([
+						<>y</>,
+						/* @__PURE__ */ import.meta(import.meta, null, 'y'),
+					])
+				}
+				export {}
+			`,
+		},
+		entryPaths: []string{"/factory.jsx", "/fragment.jsx"},
+		options: config.Options{
+			Mode:                  config.ModeBundle,
+			UnsupportedJSFeatures: compat.ImportMeta,
+			JSX: config.JSXOptions{
+				Factory:  config.DefineExpr{Parts: []string{"import", "meta"}},
+				Fragment: config.DefineExpr{Parts: []string{"import", "meta"}},
+			},
+			AbsOutputDir: "/out",
+		},
+		expectedScanLog: `factory.jsx: WARNING: "import.meta" is not available in the configured target environment and will be empty
+factory.jsx: WARNING: "import.meta" is not available in the configured target environment and will be empty
+fragment.jsx: WARNING: "import.meta" is not available in the configured target environment and will be empty
+fragment.jsx: WARNING: "import.meta" is not available in the configured target environment and will be empty
+fragment.jsx: WARNING: "import.meta" is not available in the configured target environment and will be empty
+fragment.jsx: WARNING: "import.meta" is not available in the configured target environment and will be empty
+`,
+	})
+}
+
+func TestJSXImportMetaProperty(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/factory.jsx": `
+				console.log([
+					<x />,
+					/* @__PURE__ */ import.meta.factory('x', null),
+				])
+				f = function() {
+					console.log([
+						<y />,
+						/* @__PURE__ */ import.meta.factory('y', null),
+					])
+				}
+				export {}
+			`,
+			"/fragment.jsx": `
+				console.log([
+					<>x</>,
+					/* @__PURE__ */ import.meta.factory(import.meta.fragment, null, 'x'),
+				]),
+				f = function() {
+					console.log([
+						<>y</>,
+						/* @__PURE__ */ import.meta.factory(import.meta.fragment, null, 'y'),
+					])
+				}
+				export {}
+			`,
+		},
+		entryPaths: []string{"/factory.jsx", "/fragment.jsx"},
+		options: config.Options{
+			Mode:                  config.ModeBundle,
+			UnsupportedJSFeatures: compat.ImportMeta,
+			JSX: config.JSXOptions{
+				Factory:  config.DefineExpr{Parts: []string{"import", "meta", "factory"}},
+				Fragment: config.DefineExpr{Parts: []string{"import", "meta", "fragment"}},
+			},
+			AbsOutputDir: "/out",
+		},
+		expectedScanLog: `factory.jsx: WARNING: "import.meta" is not available in the configured target environment and will be empty
+factory.jsx: WARNING: "import.meta" is not available in the configured target environment and will be empty
+fragment.jsx: WARNING: "import.meta" is not available in the configured target environment and will be empty
+fragment.jsx: WARNING: "import.meta" is not available in the configured target environment and will be empty
+fragment.jsx: WARNING: "import.meta" is not available in the configured target environment and will be empty
+fragment.jsx: WARNING: "import.meta" is not available in the configured target environment and will be empty
+`,
+	})
+}
+
 func TestBundlingFilesOutsideOfOutbase(t *testing.T) {
 	splitting_suite.expectBundled(t, bundled{
 		files: map[string]string{
@@ -4833,8 +5584,11 @@ func TestThisUndefinedWarningESM(t *testing.T) {
 			Mode:         config.ModeBundle,
 			AbsOutputDir: "/out",
 		},
-		expectedScanLog: `file1.js: WARNING: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
+		debugLogs: true,
+		expectedScanLog: `file1.js: DEBUG: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
 file1.js: NOTE: This file is considered to be an ECMAScript module because of the "export" keyword here:
+node_modules/pkg/file2.js: DEBUG: Top-level "this" will be replaced with undefined since this file is an ECMAScript module
+node_modules/pkg/file2.js: NOTE: This file is considered to be an ECMAScript module because of the "export" keyword here:
 `,
 	})
 }
@@ -4891,14 +5645,14 @@ func TestDuplicatePropertyWarning(t *testing.T) {
 				import './outside-node-modules'
 				import 'inside-node-modules'
 			`,
-			"/outside-node-modules/index.js": `
-				console.log({ a: 1, a: 2 })
+			"/outside-node-modules/index.jsx": `
+				console.log({ a: 1, a: 2 }, <div a2 a2={3}/>)
 			`,
 			"/outside-node-modules/package.json": `
 				{ "b": 1, "b": 2 }
 			`,
-			"/node_modules/inside-node-modules/index.js": `
-				console.log({ c: 1, c: 2 })
+			"/node_modules/inside-node-modules/index.jsx": `
+				console.log({ c: 1, c: 2 }, <div c2 c2={3}/>)
 			`,
 			"/node_modules/inside-node-modules/package.json": `
 				{ "d": 1, "d": 2 }
@@ -4909,8 +5663,10 @@ func TestDuplicatePropertyWarning(t *testing.T) {
 			Mode:         config.ModeBundle,
 			AbsOutputDir: "/out",
 		},
-		expectedScanLog: `outside-node-modules/index.js: WARNING: Duplicate key "a" in object literal
-outside-node-modules/index.js: NOTE: The original key "a" is here:
+		expectedScanLog: `outside-node-modules/index.jsx: WARNING: Duplicate key "a" in object literal
+outside-node-modules/index.jsx: NOTE: The original key "a" is here:
+outside-node-modules/index.jsx: WARNING: Duplicate "a2" attribute in JSX element
+outside-node-modules/index.jsx: NOTE: The original "a2" attribute is here:
 outside-node-modules/package.json: WARNING: Duplicate key "b" in object literal
 outside-node-modules/package.json: NOTE: The original key "b" is here:
 `,
@@ -4954,7 +5710,7 @@ func TestRequireShimSubstitution(t *testing.T) {
 
 // This guards against a bad interaction between the strict mode nested function
 // declarations, name keeping, and initialized variable inlining. See this issue
-// for full context: https://github.com/theseyan/boptimizer/issues/1552.
+// for full context: https://github.com/evanw/esbuild/issues/1552.
 func TestStrictModeNestedFnDeclKeepNamesVariableInliningIssue1552(t *testing.T) {
 	default_suite.expectBundled(t, bundled{
 		files: map[string]string{
@@ -5167,11 +5923,10 @@ func TestToESMWrapperOmission(t *testing.T) {
 
 // This is coverage for a past bug in esbuild. We used to generate this, which is wrong:
 //
-//   let x = function(foo) {
-//     var foo2;
-//     return foo2;
-//   };
-//
+//	let x = function(foo) {
+//	  var foo2;
+//	  return foo2;
+//	};
 func TestNamedFunctionExpressionArgumentCollision(t *testing.T) {
 	loader_suite.expectBundled(t, bundled{
 		files: map[string]string{
@@ -5608,8 +6363,8 @@ func TestManglePropsJSXTransform(t *testing.T) {
 			AbsOutputFile: "/out.js",
 			MangleProps:   regexp.MustCompile("_$"),
 			JSX: config.JSXOptions{
-				Factory:  config.JSXExpr{Parts: []string{"Foo", "createElement_"}},
-				Fragment: config.JSXExpr{Parts: []string{"Foo", "Fragment_"}},
+				Factory:  config.DefineExpr{Parts: []string{"Foo", "createElement_"}},
+				Fragment: config.DefineExpr{Parts: []string{"Foo", "Fragment_"}},
 			},
 		},
 	})
@@ -5851,7 +6606,7 @@ func TestManglePropsLoweredClassFields(t *testing.T) {
 // This tests for a case where "constructor" was being mangled, which made the
 // method become a non-constructor, and then "super()" caused a parse error.
 // The fix was to prevent the property "constructor" from being mangled.
-// See: https://github.com/theseyan/boptimizer/issues/1976
+// See: https://github.com/evanw/esbuild/issues/1976
 func TestManglePropsSuperCall(t *testing.T) {
 	loader_suite.expectBundled(t, bundled{
 		files: map[string]string{
@@ -5901,6 +6656,35 @@ func TestMangleNoQuotedProps(t *testing.T) {
 	})
 }
 
+func TestMangleNoQuotedPropsMinifySyntax(t *testing.T) {
+	loader_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				x['_doNotMangleThis'];
+				x?.['_doNotMangleThis'];
+				x[y ? '_doNotMangleThis' : z];
+				x?.[y ? '_doNotMangleThis' : z];
+				x[y ? z : '_doNotMangleThis'];
+				x?.[y ? z : '_doNotMangleThis'];
+				({ '_doNotMangleThis': x });
+				(class { '_doNotMangleThis' = x });
+				var { '_doNotMangleThis': x } = y;
+				'_doNotMangleThis' in x;
+				(y ? '_doNotMangleThis' : z) in x;
+				(y ? z : '_doNotMangleThis') in x;
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:         config.ModePassThrough,
+			AbsOutputDir: "/out",
+			MangleProps:  regexp.MustCompile("_"),
+			MangleQuoted: false,
+			MinifySyntax: true,
+		},
+	})
+}
+
 func TestMangleQuotedProps(t *testing.T) {
 	loader_suite.expectBundled(t, bundled{
 		files: map[string]string{
@@ -5946,5 +6730,352 @@ func TestMangleQuotedProps(t *testing.T) {
 			MangleProps:  regexp.MustCompile("_"),
 			MangleQuoted: true,
 		},
+	})
+}
+
+func TestMangleQuotedPropsMinifySyntax(t *testing.T) {
+	loader_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/keep.js": `
+				foo("_keepThisProperty");
+				foo((x, "_keepThisProperty"));
+				foo(x ? "_keepThisProperty" : "_keepThisPropertyToo");
+				x[foo("_keepThisProperty")];
+				x?.[foo("_keepThisProperty")];
+				({ [foo("_keepThisProperty")]: x });
+				(class { [foo("_keepThisProperty")] = x });
+				var { [foo("_keepThisProperty")]: x } = y;
+				foo("_keepThisProperty") in x;
+			`,
+			"/mangle.js": `
+				x['_mangleThis'];
+				x?.['_mangleThis'];
+				x[y ? '_mangleThis' : z];
+				x?.[y ? '_mangleThis' : z];
+				x[y ? z : '_mangleThis'];
+				x?.[y ? z : '_mangleThis'];
+				x[y, '_mangleThis'];
+				x?.[y, '_mangleThis'];
+				({ '_mangleThis': x });
+				({ ['_mangleThis']: x });
+				({ [(y, '_mangleThis')]: x });
+				(class { '_mangleThis' = x });
+				(class { ['_mangleThis'] = x });
+				(class { [(y, '_mangleThis')] = x });
+				var { '_mangleThis': x } = y;
+				var { ['_mangleThis']: x } = y;
+				var { [(z, '_mangleThis')]: x } = y;
+				'_mangleThis' in x;
+				(y ? '_mangleThis' : z) in x;
+				(y ? z : '_mangleThis') in x;
+				(y, '_mangleThis') in x;
+			`,
+		},
+		entryPaths: []string{"/keep.js", "/mangle.js"},
+		options: config.Options{
+			Mode:         config.ModePassThrough,
+			AbsOutputDir: "/out",
+			MangleProps:  regexp.MustCompile("_"),
+			MangleQuoted: true,
+			MinifySyntax: true,
+		},
+	})
+}
+
+func TestIndirectRequireMessage(t *testing.T) {
+	loader_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/array.js":  `let x = [require]`,
+			"/assign.js": `require = x`,
+			"/ident.js":  `let x = require`,
+
+			// These shouldn't log anything: https://github.com/evanw/esbuild/issues/812
+			"/dot.js":   `let x = require.cache`,
+			"/index.js": `let x = require[cache]`,
+		},
+		entryPaths: []string{
+			"/array.js",
+			"/assign.js",
+			"/dot.js",
+			"/ident.js",
+			"/index.js",
+		},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+		},
+		debugLogs: true,
+		expectedScanLog: `array.js: DEBUG: Indirect calls to "require" will not be bundled
+assign.js: DEBUG: Indirect calls to "require" will not be bundled
+ident.js: DEBUG: Indirect calls to "require" will not be bundled
+`,
+	})
+}
+
+func TestAmbiguousReexportMsg(t *testing.T) {
+	loader_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				export * from './a'
+				export * from './b'
+				export * from './c'
+			`,
+			"/a.js": `export let a = 1, x = 2`,
+			"/b.js": `export let b = 3; export { b as x }`,
+			"/c.js": `export let c = 4, x = 5`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+		},
+		debugLogs: true,
+		expectedCompileLog: `DEBUG: Re-export of "x" in "entry.js" is ambiguous and has been removed
+a.js: NOTE: One definition of "x" comes from "a.js" here:
+b.js: NOTE: Another definition of "x" comes from "b.js" here:
+`,
+	})
+}
+
+// See: https://github.com/evanw/esbuild/issues/2537
+func TestNonDeterminismIssue2537(t *testing.T) {
+	loader_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.ts": `
+				export function aap(noot: boolean, wim: number) {
+					let mies = "teun"
+					if (noot) {
+						function vuur(v: number) {
+							return v * 2
+						}
+						function schaap(s: number) {
+							return s / 2
+						}
+						mies = vuur(wim) + schaap(wim)
+					}
+					return mies
+				}
+			`,
+			"/tsconfig.json": `
+				{
+					"compilerOptions": {
+						"alwaysStrict": true
+					}
+				}
+			`,
+		},
+		entryPaths: []string{"/entry.ts"},
+		options: config.Options{
+			Mode:              config.ModeBundle,
+			AbsOutputFile:     "/out.js",
+			MinifyIdentifiers: true,
+		},
+	})
+}
+
+// See: https://github.com/evanw/esbuild/issues/2697
+func TestMinifiedJSXPreserveWithObjectSpread(t *testing.T) {
+	loader_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.jsx": `
+				const obj = {
+					before,
+					...{ [key]: value },
+					...{ key: value },
+					after,
+				};
+				<Foo
+					before
+					{...{ [key]: value }}
+					{...{ key: value }}
+					after
+				/>;
+				<Bar
+					{...{
+						a,
+						[b]: c,
+						...d,
+						e,
+					}}
+				/>;
+			`,
+		},
+		entryPaths: []string{"/entry.jsx"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/out.js",
+			MinifySyntax:  true,
+			JSX: config.JSXOptions{
+				Preserve: true,
+			},
+		},
+	})
+}
+
+func TestPackageAlias(t *testing.T) {
+	loader_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				import "pkg1"
+				import "pkg2/foo"
+				import "./nested3"
+				import "@scope/pkg4"
+				import "@scope/pkg5/foo"
+				import "@abs-path/pkg6"
+				import "@abs-path/pkg7/foo"
+				import "@scope-only/pkg8"
+			`,
+			"/nested3/index.js":                     `import "pkg3"`,
+			"/nested3/node_modules/alias3/index.js": `test failure`,
+			"/node_modules/alias1/index.js":         `console.log(1)`,
+			"/node_modules/alias2/foo.js":           `console.log(2)`,
+			"/node_modules/alias3/index.js":         `console.log(3)`,
+			"/node_modules/alias4/index.js":         `console.log(4)`,
+			"/node_modules/alias5/foo.js":           `console.log(5)`,
+			"/alias6/dir/index.js":                  `console.log(6)`,
+			"/alias7/dir/foo/index.js":              `console.log(7)`,
+			"/alias8/dir/pkg8/index.js":             `console.log(8)`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/out.js",
+			PackageAliases: map[string]string{
+				"pkg1":           "alias1",
+				"pkg2":           "alias2",
+				"pkg3":           "alias3",
+				"@scope/pkg4":    "alias4",
+				"@scope/pkg5":    "alias5",
+				"@abs-path/pkg6": `/alias6/dir`,
+				"@abs-path/pkg7": `/alias7/dir`,
+				"@scope-only":    "/alias8/dir",
+			},
+		},
+	})
+}
+
+func TestErrorsForAssertTypeJSON(t *testing.T) {
+	loader_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/js-entry.js": `
+				import all from './foo.json' assert { type: 'json' }
+				import { default as def } from './foo.json' assert { type: 'json' }
+				import { unused } from './foo.json' assert { type: 'json' }
+				import { used } from './foo.json' assert { type: 'json' }
+				import * as ns from './foo.json' assert { type: 'json' }
+				use(used, ns.prop)
+				export { exported } from './foo.json' assert { type: 'json' }
+				import text from './foo.text' assert { type: 'json' }
+				import file from './foo.file' assert { type: 'json' }
+				import copy from './foo.copy' assert { type: 'json' }
+			`,
+			"/ts-entry.ts": `
+				import all from './foo.json' assert { type: 'json' }
+				import { default as def } from './foo.json' assert { type: 'json' }
+				import { unused } from './foo.json' assert { type: 'json' }
+				import { used } from './foo.json' assert { type: 'json' }
+				import * as ns from './foo.json' assert { type: 'json' }
+				use(used, ns.prop)
+				export { exported } from './foo.json' assert { type: 'json' }
+				import text from './foo.text' assert { type: 'json' }
+				import file from './foo.file' assert { type: 'json' }
+				import copy from './foo.copy' assert { type: 'json' }
+			`,
+			"/foo.json": `{}`,
+			"/foo.text": `{}`,
+			"/foo.file": `{}`,
+			"/foo.copy": `{}`,
+		},
+		entryPaths: []string{
+			"/js-entry.js",
+			"/ts-entry.ts",
+		},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+			ExtensionToLoader: map[string]config.Loader{
+				".js":   config.LoaderJS,
+				".ts":   config.LoaderTS,
+				".json": config.LoaderJSON,
+				".text": config.LoaderText,
+				".file": config.LoaderFile,
+				".copy": config.LoaderCopy,
+			},
+		},
+		expectedScanLog: `js-entry.js: ERROR: Cannot use non-default import "unused" with a standard JSON module
+js-entry.js: NOTE: This is considered an import of a standard JSON module because of the import assertion here:
+NOTE: You can either keep the import assertion and only use the "default" import, or you can remove the import assertion and use the "unused" import (which is non-standard behavior).
+js-entry.js: ERROR: Cannot use non-default import "used" with a standard JSON module
+js-entry.js: NOTE: This is considered an import of a standard JSON module because of the import assertion here:
+NOTE: You can either keep the import assertion and only use the "default" import, or you can remove the import assertion and use the "used" import (which is non-standard behavior).
+js-entry.js: WARNING: Non-default import "prop" is undefined with a standard JSON module
+js-entry.js: NOTE: This is considered an import of a standard JSON module because of the import assertion here:
+NOTE: You can either keep the import assertion and only use the "default" import, or you can remove the import assertion and use the "prop" import (which is non-standard behavior).
+js-entry.js: ERROR: Cannot use non-default import "exported" with a standard JSON module
+js-entry.js: NOTE: This is considered an import of a standard JSON module because of the import assertion here:
+NOTE: You can either keep the import assertion and only use the "default" import, or you can remove the import assertion and use the "exported" import (which is non-standard behavior).
+js-entry.js: ERROR: The file "foo.text" was loaded with the "text" loader
+js-entry.js: NOTE: This import assertion requires the loader to be "json" instead:
+NOTE: You need to either reconfigure esbuild to ensure that the loader for this file is "json" or you need to remove this import assertion.
+js-entry.js: ERROR: The file "foo.file" was loaded with the "file" loader
+js-entry.js: NOTE: This import assertion requires the loader to be "json" instead:
+NOTE: You need to either reconfigure esbuild to ensure that the loader for this file is "json" or you need to remove this import assertion.
+ts-entry.ts: ERROR: Cannot use non-default import "used" with a standard JSON module
+ts-entry.ts: NOTE: This is considered an import of a standard JSON module because of the import assertion here:
+NOTE: You can either keep the import assertion and only use the "default" import, or you can remove the import assertion and use the "used" import (which is non-standard behavior).
+ts-entry.ts: WARNING: Non-default import "prop" is undefined with a standard JSON module
+ts-entry.ts: NOTE: This is considered an import of a standard JSON module because of the import assertion here:
+NOTE: You can either keep the import assertion and only use the "default" import, or you can remove the import assertion and use the "prop" import (which is non-standard behavior).
+ts-entry.ts: ERROR: Cannot use non-default import "exported" with a standard JSON module
+ts-entry.ts: NOTE: This is considered an import of a standard JSON module because of the import assertion here:
+NOTE: You can either keep the import assertion and only use the "default" import, or you can remove the import assertion and use the "exported" import (which is non-standard behavior).
+`,
+	})
+}
+
+func TestOutputForAssertTypeJSON(t *testing.T) {
+	loader_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/js-entry.js": `
+				import all from './foo.json' assert { type: 'json' }
+				import copy from './foo.copy' assert { type: 'json' }
+				import { default as def } from './foo.json' assert { type: 'json' }
+				import * as ns from './foo.json' assert { type: 'json' }
+				use(all, copy, def, ns.prop)
+				export { default } from './foo.json' assert { type: 'json' }
+			`,
+			"/ts-entry.ts": `
+				import all from './foo.json' assert { type: 'json' }
+				import copy from './foo.copy' assert { type: 'json' }
+				import { default as def } from './foo.json' assert { type: 'json' }
+				import { unused } from './foo.json' assert { type: 'json' }
+				import * as ns from './foo.json' assert { type: 'json' }
+				use(all, copy, def, ns.prop)
+				export { default } from './foo.json' assert { type: 'json' }
+			`,
+			"/foo.json": `{}`,
+			"/foo.copy": `{}`,
+		},
+		entryPaths: []string{
+			"/js-entry.js",
+			"/ts-entry.ts",
+		},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+			ExtensionToLoader: map[string]config.Loader{
+				".js":   config.LoaderJS,
+				".ts":   config.LoaderTS,
+				".json": config.LoaderJSON,
+				".copy": config.LoaderCopy,
+			},
+		},
+		expectedScanLog: `js-entry.js: WARNING: Non-default import "prop" is undefined with a standard JSON module
+js-entry.js: NOTE: This is considered an import of a standard JSON module because of the import assertion here:
+NOTE: You can either keep the import assertion and only use the "default" import, or you can remove the import assertion and use the "prop" import (which is non-standard behavior).
+ts-entry.ts: WARNING: Non-default import "prop" is undefined with a standard JSON module
+ts-entry.ts: NOTE: This is considered an import of a standard JSON module because of the import assertion here:
+NOTE: You can either keep the import assertion and only use the "default" import, or you can remove the import assertion and use the "prop" import (which is non-standard behavior).
+`,
 	})
 }

@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/theseyan/boptimizer/internal/ast"
-	"github.com/theseyan/boptimizer/internal/compat"
-	"github.com/theseyan/boptimizer/internal/css_ast"
-	"github.com/theseyan/boptimizer/internal/css_lexer"
-	"github.com/theseyan/boptimizer/internal/logger"
+	"github.com/evanw/esbuild/internal/ast"
+	"github.com/evanw/esbuild/internal/compat"
+	"github.com/evanw/esbuild/internal/css_ast"
+	"github.com/evanw/esbuild/internal/css_lexer"
+	"github.com/evanw/esbuild/internal/logger"
 )
 
 // This is mostly a normal CSS parser with one exception: the addition of
@@ -113,6 +113,10 @@ func (p *parser) eat(kind css_lexer.T) bool {
 }
 
 func (p *parser) expect(kind css_lexer.T) bool {
+	return p.expectWithMatchingLoc(kind, logger.Loc{Start: -1})
+}
+
+func (p *parser) expectWithMatchingLoc(kind css_lexer.T, matchingLoc logger.Loc) bool {
 	if p.eat(kind) {
 		return true
 	}
@@ -123,6 +127,7 @@ func (p *parser) expect(kind css_lexer.T) bool {
 
 	var text string
 	var suggestion string
+	var notes []logger.MsgData
 
 	expected := kind.String()
 	if strings.HasPrefix(expected, "\"") && strings.HasSuffix(expected, "\"") {
@@ -133,6 +138,11 @@ func (p *parser) expect(kind css_lexer.T) bool {
 		// Have a nice error message for forgetting a trailing semicolon or colon
 		text = fmt.Sprintf("Expected %s", expected)
 		t = p.at(p.index - 1)
+	} else if (kind == css_lexer.TCloseBrace || kind == css_lexer.TCloseBracket || kind == css_lexer.TCloseParen) && matchingLoc.Start != -1 {
+		// Have a nice error message for forgetting a closing brace/bracket/parenthesis
+		c := p.source.Contents[matchingLoc.Start : matchingLoc.Start+1]
+		text = fmt.Sprintf("Expected %s to go with %q", expected, c)
+		notes = append(notes, p.tracker.MsgData(logger.Range{Loc: matchingLoc, Len: 1}, fmt.Sprintf("The unbalanced %q is here:", c)))
 	} else {
 		switch t.Kind {
 		case css_lexer.TEndOfFile, css_lexer.TWhitespace:
@@ -148,7 +158,7 @@ func (p *parser) expect(kind css_lexer.T) bool {
 	if t.Range.Loc.Start > p.prevError.Start {
 		data := p.tracker.MsgData(t.Range, text)
 		data.Location.Suggestion = suggestion
-		p.log.AddMsg(logger.Msg{Kind: logger.Warning, Data: data})
+		p.log.AddMsgID(logger.MsgID_CSS_CSSSyntaxError, logger.Msg{Kind: logger.Warning, Data: data, Notes: notes})
 		p.prevError = t.Range.Loc
 	}
 	return false
@@ -166,7 +176,7 @@ func (p *parser) unexpected() {
 		default:
 			text = fmt.Sprintf("Unexpected %q", p.raw())
 		}
-		p.log.Add(logger.Warning, &p.tracker, t.Range, text)
+		p.log.AddID(logger.MsgID_CSS_CSSSyntaxError, logger.Warning, &p.tracker, t.Range, text)
 		p.prevError = t.Range.Loc
 	}
 }
@@ -181,6 +191,7 @@ func (p *parser) parseListOfRules(context ruleContext) []css_ast.Rule {
 	if context.isTopLevel {
 		atRuleContext.charsetValidity = atRuleValid
 		atRuleContext.importValidity = atRuleValid
+		atRuleContext.isTopLevel = true
 	}
 	rules := []css_ast.Rule{}
 	didFindAtImport := false
@@ -271,14 +282,14 @@ loop:
 		}
 
 		if context.parseSelectors {
-			rules = append(rules, p.parseSelectorRuleFrom(p.index, parseSelectorOpts{}))
+			rules = append(rules, p.parseSelectorRuleFrom(p.index, parseSelectorOpts{isTopLevel: context.isTopLevel}))
 		} else {
-			rules = append(rules, p.parseQualifiedRuleFrom(p.index, false /* isAlreadyInvalid */))
+			rules = append(rules, p.parseQualifiedRuleFrom(p.index, parseQualifiedRuleOpts{isTopLevel: context.isTopLevel}))
 		}
 	}
 
 	if p.options.MinifySyntax {
-		rules = mangleRules(rules)
+		rules = mangleRules(rules, context.isTopLevel)
 	}
 	return rules
 }
@@ -293,7 +304,7 @@ func (p *parser) parseListOfDeclarations() (list []css_ast.Rule) {
 		case css_lexer.TEndOfFile, css_lexer.TCloseBrace:
 			list = p.processDeclarations(list)
 			if p.options.MinifySyntax {
-				list = mangleRules(list)
+				list = mangleRules(list, false /* isTopLevel */)
 			}
 			return
 
@@ -313,14 +324,17 @@ func (p *parser) parseListOfDeclarations() (list []css_ast.Rule) {
 	}
 }
 
-func mangleRules(rules []css_ast.Rule) []css_ast.Rule {
+func mangleRules(rules []css_ast.Rule, isTopLevel bool) []css_ast.Rule {
 	type hashEntry struct {
 		indices []uint32
 	}
 
 	// Remove empty rules
+	var prevNonComment css_ast.R
 	n := 0
 	for _, rule := range rules {
+		nextNonComment := rule.Data
+
 		switch r := rule.Data.(type) {
 		case *css_ast.RAtKeyframes:
 			// Do not remove empty "@keyframe foo {}" rules. Even empty rules still
@@ -358,6 +372,34 @@ func mangleRules(rules []css_ast.Rule) []css_ast.Rule {
 			if len(r.Rules) == 0 {
 				continue
 			}
+
+			// Merge adjacent selectors with the same content
+			// "a { color: red; } b { color: red; }" => "a, b { color: red; }"
+			if prevNonComment != nil {
+				if r, ok := rule.Data.(*css_ast.RSelector); ok {
+					if prev, ok := prevNonComment.(*css_ast.RSelector); ok && css_ast.RulesEqual(r.Rules, prev.Rules) &&
+						isSafeSelectors(r.Selectors) && isSafeSelectors(prev.Selectors) {
+					nextSelector:
+						for _, sel := range r.Selectors {
+							for _, prevSel := range prev.Selectors {
+								if sel.Equal(prevSel) {
+									// Don't add duplicate selectors more than once
+									continue nextSelector
+								}
+							}
+							prev.Selectors = append(prev.Selectors, sel)
+						}
+						continue
+					}
+				}
+			}
+
+		case *css_ast.RComment:
+			nextNonComment = nil
+		}
+
+		if nextNonComment != nil {
+			prevNonComment = nextNonComment
 		}
 
 		rules[n] = rule
@@ -365,53 +407,50 @@ func mangleRules(rules []css_ast.Rule) []css_ast.Rule {
 	}
 	rules = rules[:n]
 
-	// Remove duplicate rules, scanning from the back so we keep the last duplicate
+	// Mangle non-top-level rules using a back-to-front pass. Top-level rules
+	// will be mangled by the linker instead for cross-file rule mangling.
+	if !isTopLevel {
+		rules = MakeDuplicateRuleMangler().RemoveDuplicateRulesInPlace(rules)
+	}
+
+	return rules
+}
+
+type hashEntry struct {
+	rules []css_ast.R
+}
+
+type DuplicateRuleRemover struct {
+	entries map[uint32]hashEntry
+}
+
+func MakeDuplicateRuleMangler() DuplicateRuleRemover {
+	return DuplicateRuleRemover{entries: make(map[uint32]hashEntry)}
+}
+
+func (remover DuplicateRuleRemover) RemoveDuplicateRulesInPlace(rules []css_ast.Rule) []css_ast.Rule {
+	// Remove duplicate rules, scanning from the back so we keep the last
+	// duplicate. Note that the linker calls this, so we do not want to do
+	// anything that modifies the rules themselves. One reason is that ASTs
+	// are immutable at the linking stage. Another reason is that merging
+	// CSS ASTs from separate files will mess up source maps because a single
+	// AST cannot simultaneously represent offsets from multiple files.
+	n := len(rules)
 	start := n
-	entries := make(map[uint32]hashEntry)
 skipRule:
 	for i := n - 1; i >= 0; i-- {
 		rule := rules[i]
 
-		// Skip over preserved comments
-		next := i - 1
-		for next >= 0 {
-			if _, ok := rules[next].Data.(*css_ast.RComment); !ok {
-				break
-			}
-			next--
-		}
-
-		// Merge adjacent selectors with the same content
-		// "a { color: red; } b { color: red; }" => "a, b { color: red; }"
-		if next >= 0 {
-			if r, ok := rule.Data.(*css_ast.RSelector); ok {
-				if prev, ok := rules[next].Data.(*css_ast.RSelector); ok && css_ast.RulesEqual(r.Rules, prev.Rules) &&
-					isSafeSelectors(r.Selectors) && isSafeSelectors(prev.Selectors) {
-				nextSelector:
-					for _, sel := range r.Selectors {
-						for _, prevSel := range prev.Selectors {
-							if sel.Equal(prevSel) {
-								// Don't add duplicate selectors more than once
-								continue nextSelector
-							}
-						}
-						prev.Selectors = append(prev.Selectors, sel)
-					}
-					continue skipRule
-				}
-			}
-		}
-
 		// For duplicate rules, omit all but the last copy
 		if hash, ok := rule.Data.Hash(); ok {
-			entry := entries[hash]
-			for _, index := range entry.indices {
-				if rule.Data.Equal(rules[index].Data) {
+			entry := remover.entries[hash]
+			for _, data := range entry.rules {
+				if rule.Data.Equal(data) {
 					continue skipRule
 				}
 			}
-			entry.indices = append(entry.indices, uint32(i))
-			entries[hash] = entry
+			entry.rules = append(entry.rules, rule.Data)
+			remover.entries[hash] = entry
 		}
 
 		start--
@@ -510,17 +549,17 @@ var nonDeprecatedElementsSupportedByIE7 = map[string]bool{
 // if any of the selectors are unsafe, since then browsers which don't support
 // that particular feature would ignore the entire merged qualified rule:
 //
-//   Input:
-//     a { color: red }
-//     b { color: red }
-//     input::-moz-placeholder { color: red }
+//	Input:
+//	  a { color: red }
+//	  b { color: red }
+//	  input::-moz-placeholder { color: red }
 //
-//   Valid output:
-//     a, b { color: red }
-//     input::-moz-placeholder { color: red }
+//	Valid output:
+//	  a, b { color: red }
+//	  input::-moz-placeholder { color: red }
 //
-//   Invalid output:
-//     a, b, input::-moz-placeholder { color: red }
+//	Invalid output:
+//	  a, b, input::-moz-placeholder { color: red }
 //
 // This considers IE 7 and above to be a browser that a user could possibly use.
 // Versions of IE less than 6 are not considered.
@@ -593,10 +632,11 @@ func (p *parser) parseURLOrString() (string, logger.Range, bool) {
 
 	case css_lexer.TFunction:
 		if p.decoded() == "url" {
+			matchingLoc := logger.Loc{Start: p.current().Range.End() - 1}
 			p.advance()
 			t = p.current()
 			text := p.decoded()
-			if p.expect(css_lexer.TString) && p.expect(css_lexer.TCloseParen) {
+			if p.expect(css_lexer.TString) && p.expectWithMatchingLoc(css_lexer.TCloseParen, matchingLoc) {
 				return text, t.Range, true
 			}
 		}
@@ -681,6 +721,28 @@ var specialAtRules = map[string]atRuleKind{
 
 	// Reference: https://drafts.csswg.org/css-nesting-1/
 	"nest": atRuleDeclarations,
+
+	// Reference: https://drafts.csswg.org/css-fonts-4/#font-palette-values
+	"font-palette-values": atRuleDeclarations,
+
+	// Documentation: https://developer.mozilla.org/en-US/docs/Web/CSS/@counter-style
+	// Reference: https://drafts.csswg.org/css-counter-styles/#the-counter-style-rule
+	"counter-style": atRuleDeclarations,
+
+	// Documentation: https://developer.mozilla.org/en-US/docs/Web/CSS/@font-feature-values
+	// Reference: https://drafts.csswg.org/css-fonts/#font-feature-values
+	"font-feature-values": atRuleDeclarations,
+	"annotation":          atRuleDeclarations,
+	"character-variant":   atRuleDeclarations,
+	"historical-forms":    atRuleDeclarations,
+	"ornaments":           atRuleDeclarations,
+	"styleset":            atRuleDeclarations,
+	"stylistic":           atRuleDeclarations,
+	"swash":               atRuleDeclarations,
+
+	// Container Queries
+	// Reference: https://drafts.csswg.org/css-contain-3/#container-rule
+	"container": atRuleInheritContext,
 }
 
 type atRuleValidity uint8
@@ -697,6 +759,7 @@ type atRuleContext struct {
 	importValidity    atRuleValidity
 	isDeclarationList bool
 	allowNesting      bool
+	isTopLevel        bool
 }
 
 func (p *parser) parseAtRule(context atRuleContext) css_ast.Rule {
@@ -713,10 +776,11 @@ abortRuleParser:
 	case "charset":
 		switch context.charsetValidity {
 		case atRuleInvalid:
-			p.log.Add(logger.Warning, &p.tracker, atRange, "\"@charset\" must be the first rule in the file")
+			p.log.AddID(logger.MsgID_CSS_InvalidAtCharset, logger.Warning, &p.tracker, atRange, "\"@charset\" must be the first rule in the file")
 
 		case atRuleInvalidAfter:
-			p.log.AddWithNotes(logger.Warning, &p.tracker, atRange, "\"@charset\" must be the first rule in the file",
+			p.log.AddIDWithNotes(logger.MsgID_CSS_InvalidAtCharset, logger.Warning, &p.tracker, atRange,
+				"\"@charset\" must be the first rule in the file",
 				[]logger.MsgData{p.tracker.MsgData(logger.Range{Loc: context.afterLoc},
 					"This rule cannot come before a \"@charset\" rule")})
 
@@ -726,7 +790,7 @@ abortRuleParser:
 			if p.peek(css_lexer.TString) {
 				encoding := p.decoded()
 				if !strings.EqualFold(encoding, "UTF-8") {
-					p.log.Add(logger.Warning, &p.tracker, p.current().Range,
+					p.log.AddID(logger.MsgID_CSS_UnsupportedAtCharset, logger.Warning, &p.tracker, p.current().Range,
 						fmt.Sprintf("\"UTF-8\" will be used instead of unsupported charset %q", encoding))
 				}
 				p.advance()
@@ -739,10 +803,11 @@ abortRuleParser:
 	case "import":
 		switch context.importValidity {
 		case atRuleInvalid:
-			p.log.Add(logger.Warning, &p.tracker, atRange, "\"@import\" is only valid at the top level")
+			p.log.AddID(logger.MsgID_CSS_InvalidAtImport, logger.Warning, &p.tracker, atRange, "\"@import\" is only valid at the top level")
 
 		case atRuleInvalidAfter:
-			p.log.AddWithNotes(logger.Warning, &p.tracker, atRange, "All \"@import\" rules must come first",
+			p.log.AddIDWithNotes(logger.MsgID_CSS_InvalidAtImport, logger.Warning, &p.tracker, atRange,
+				"All \"@import\" rules must come first",
 				[]logger.MsgData{p.tracker.MsgData(logger.Range{Loc: context.afterLoc},
 					"This rule cannot come before an \"@import\" rule")})
 
@@ -795,16 +860,20 @@ abortRuleParser:
 		if p.peek(css_lexer.TIdent) {
 			name = p.decoded()
 			p.advance()
-		} else if !p.expect(css_lexer.TIdent) && !p.eat(css_lexer.TString) && !p.peek(css_lexer.TOpenBrace) {
-			// Consider string names a syntax error even though they are allowed by
-			// the specification and they work in Firefox because they do not work in
-			// Chrome or Safari.
+		} else if p.eat(css_lexer.TString) {
+			// Consider string names to be an unknown rule even though they are allowed
+			// by the specification and they work in Firefox because they do not work in
+			// Chrome or Safari. We don't take the effort to support this Firefox-only
+			// feature natively. Instead, we just pass the syntax through unmodified.
+			break
+		} else if !p.expect(css_lexer.TIdent) {
 			break
 		}
 
 		p.eat(css_lexer.TWhitespace)
 		blockStart := p.index
 
+		matchingLoc := p.current().Range.Loc
 		if p.expect(css_lexer.TOpenBrace) {
 			var blocks []css_ast.KeyframeBlock
 
@@ -842,7 +911,18 @@ abortRuleParser:
 							continue
 
 						case css_lexer.TOpenBrace:
+							blockMatchingLoc := p.current().Range.Loc
 							p.advance()
+							rules := p.parseListOfDeclarations()
+							p.expectWithMatchingLoc(css_lexer.TCloseBrace, blockMatchingLoc)
+
+							// "@keyframes { from {} to { color: red } }" => "@keyframes { to { color: red } }"
+							if !p.options.MinifySyntax || len(rules) > 0 {
+								blocks = append(blocks, css_ast.KeyframeBlock{
+									Selectors: selectors,
+									Rules:     rules,
+								})
+							}
 							break selectors
 
 						case css_lexer.TCloseBrace, css_lexer.TEndOfFile:
@@ -883,17 +963,6 @@ abortRuleParser:
 							break badSyntax
 						}
 					}
-
-					rules := p.parseListOfDeclarations()
-					p.expect(css_lexer.TCloseBrace)
-
-					// "@keyframes { from {} to { color: red } }" => "@keyframes { to { color: red } }"
-					if !p.options.MinifySyntax || len(rules) > 0 {
-						blocks = append(blocks, css_ast.KeyframeBlock{
-							Selectors: selectors,
-							Rules:     rules,
-						})
-					}
 				}
 			}
 
@@ -901,7 +970,7 @@ abortRuleParser:
 			for !p.peek(css_lexer.TCloseBrace) && !p.peek(css_lexer.TEndOfFile) {
 				p.parseComponentValue()
 			}
-			p.expect(css_lexer.TCloseBrace)
+			p.expectWithMatchingLoc(css_lexer.TCloseBrace, matchingLoc)
 			prelude := p.convertTokens(p.tokens[preludeStart:blockStart])
 			block, _ := p.convertTokensHelper(p.tokens[blockStart:p.index], css_lexer.TEndOfFile, convertTokensOpts{allowImports: true})
 			return css_ast.Rule{Loc: atRange.Loc, Data: &css_ast.RUnknownAt{AtToken: atToken, Prelude: prelude, Block: block}}
@@ -912,7 +981,11 @@ abortRuleParser:
 		p.eat(css_lexer.TWhitespace)
 		if kind := p.current().Kind; kind != css_lexer.TSemicolon && kind != css_lexer.TOpenBrace &&
 			kind != css_lexer.TCloseBrace && kind != css_lexer.TEndOfFile {
-			return p.parseSelectorRuleFrom(preludeStart-1, parseSelectorOpts{atNestRange: atRange, allowNesting: context.allowNesting})
+			return p.parseSelectorRuleFrom(preludeStart-1, parseSelectorOpts{
+				atNestRange:  atRange,
+				allowNesting: context.allowNesting,
+				isTopLevel:   context.isTopLevel,
+			})
 		}
 
 	case "layer":
@@ -950,11 +1023,12 @@ abortRuleParser:
 		}
 
 		// Read the optional block
+		matchingLoc := p.current().Range.Loc
 		if len(names) <= 1 && p.eat(css_lexer.TOpenBrace) {
 			rules := p.parseListOfRules(ruleContext{
 				parseSelectors: true,
 			})
-			p.expect(css_lexer.TCloseBrace)
+			p.expectWithMatchingLoc(css_lexer.TCloseBrace, matchingLoc)
 			return css_ast.Rule{Loc: atRange.Loc, Data: &css_ast.RAtLayer{Names: names, Rules: rules}}
 		}
 
@@ -988,7 +1062,7 @@ abortRuleParser:
 			//
 			// Instead of implementing all of that for an extremely obscure feature,
 			// CSS namespaces are just explicitly not supported.
-			p.log.Add(logger.Warning, &p.tracker, atRange, "\"@namespace\" rules are not supported")
+			p.log.AddID(logger.MsgID_CSS_UnsupportedAtNamespace, logger.Warning, &p.tracker, atRange, "\"@namespace\" rules are not supported")
 		}
 	}
 
@@ -1036,13 +1110,15 @@ prelude:
 
 	case atRuleDeclarations:
 		// Parse known rules whose blocks always consist of declarations
+		matchingLoc := p.current().Range.Loc
 		p.expect(css_lexer.TOpenBrace)
 		rules := p.parseListOfDeclarations()
-		p.expect(css_lexer.TCloseBrace)
+		p.expectWithMatchingLoc(css_lexer.TCloseBrace, matchingLoc)
 		return css_ast.Rule{Loc: atRange.Loc, Data: &css_ast.RKnownAt{AtToken: atToken, Prelude: prelude, Rules: rules}}
 
 	case atRuleInheritContext:
 		// Parse known rules whose blocks consist of whatever the current context is
+		matchingLoc := p.current().Range.Loc
 		p.expect(css_lexer.TOpenBrace)
 		var rules []css_ast.Rule
 		if context.isDeclarationList {
@@ -1052,15 +1128,16 @@ prelude:
 				parseSelectors: true,
 			})
 		}
-		p.expect(css_lexer.TCloseBrace)
+		p.expectWithMatchingLoc(css_lexer.TCloseBrace, matchingLoc)
 		return css_ast.Rule{Loc: atRange.Loc, Data: &css_ast.RKnownAt{AtToken: atToken, Prelude: prelude, Rules: rules}}
 
 	case atRuleQualifiedOrEmpty:
+		matchingLoc := p.current().Range.Loc
 		if p.eat(css_lexer.TOpenBrace) {
 			rules := p.parseListOfRules(ruleContext{
 				parseSelectors: true,
 			})
-			p.expect(css_lexer.TCloseBrace)
+			p.expectWithMatchingLoc(css_lexer.TCloseBrace, matchingLoc)
 			return css_ast.Rule{Loc: atRange.Loc, Data: &css_ast.RKnownAt{AtToken: atToken, Prelude: prelude, Rules: rules}}
 		}
 		p.expect(css_lexer.TSemicolon)
@@ -1082,7 +1159,7 @@ func (p *parser) expectValidLayerNameIdent() (string, bool) {
 	}
 	switch text {
 	case "initial", "inherit", "unset":
-		p.log.Add(logger.Warning, &p.tracker, r, fmt.Sprintf("%q cannot be used as a layer name", text))
+		p.log.AddID(logger.MsgID_CSS_InvalidAtLayer, logger.Warning, &p.tracker, r, fmt.Sprintf("%q cannot be used as a layer name", text))
 		p.prevError = r.Loc
 		return "", false
 	}
@@ -1154,7 +1231,7 @@ loop:
 		if opts.isInsideCalcFunction && t.Kind.IsNumeric() && len(result) > 0 && result[len(result)-1].Kind.IsNumeric() &&
 			(strings.HasPrefix(token.Text, "+") || strings.HasPrefix(token.Text, "-")) {
 			// "calc(1+2)" and "calc(1-2)" are invalid
-			p.log.Add(logger.Warning, &p.tracker, logger.Range{Loc: t.Range.Loc, Len: 1},
+			p.log.AddID(logger.MsgID_CSS_InvalidCalc, logger.Warning, &p.tracker, logger.Range{Loc: t.Range.Loc, Len: 1},
 				fmt.Sprintf("The %q operator only works if there is whitespace on both sides", token.Text[:1]))
 		}
 
@@ -1171,11 +1248,11 @@ loop:
 			if opts.isInsideCalcFunction && len(tokens) > 0 {
 				if len(result) == 0 || result[len(result)-1].Kind == css_lexer.TComma {
 					// "calc(-(1 + 2))" is invalid
-					p.log.Add(logger.Warning, &p.tracker, t.Range,
+					p.log.AddID(logger.MsgID_CSS_InvalidCalc, logger.Warning, &p.tracker, t.Range,
 						fmt.Sprintf("%q can only be used as an infix operator, not a prefix operator", token.Text))
 				} else if token.Whitespace != css_ast.WhitespaceBefore || tokens[0].Kind != css_lexer.TWhitespace {
 					// "calc(1- 2)" and "calc(1 -(2))" are invalid
-					p.log.Add(logger.Warning, &p.tracker, t.Range,
+					p.log.AddID(logger.MsgID_CSS_InvalidCalc, logger.Warning, &p.tracker, t.Range,
 						fmt.Sprintf("The %q operator only works if there is whitespace on both sides", token.Text))
 				}
 			}
@@ -1443,9 +1520,10 @@ func (p *parser) parseSelectorRuleFrom(preludeStart int, opts parseSelectorOpts)
 			Selectors: list,
 			HasAtNest: opts.atNestRange.Len != 0,
 		}
+		matchingLoc := p.current().Range.Loc
 		if p.expect(css_lexer.TOpenBrace) {
 			selector.Rules = p.parseListOfDeclarations()
-			p.expect(css_lexer.TCloseBrace)
+			p.expectWithMatchingLoc(css_lexer.TCloseBrace, matchingLoc)
 
 			// Minify "@nest" when possible
 			if p.options.MinifySyntax && selector.HasAtNest {
@@ -1466,10 +1544,18 @@ func (p *parser) parseSelectorRuleFrom(preludeStart int, opts parseSelectorOpts)
 	}
 
 	// Otherwise, parse a generic qualified rule
-	return p.parseQualifiedRuleFrom(preludeStart, true /* isAlreadyInvalid */)
+	return p.parseQualifiedRuleFrom(preludeStart, parseQualifiedRuleOpts{
+		isAlreadyInvalid: true,
+		isTopLevel:       opts.isTopLevel,
+	})
 }
 
-func (p *parser) parseQualifiedRuleFrom(preludeStart int, isAlreadyInvalid bool) css_ast.Rule {
+type parseQualifiedRuleOpts struct {
+	isAlreadyInvalid bool
+	isTopLevel       bool
+}
+
+func (p *parser) parseQualifiedRuleFrom(preludeStart int, opts parseQualifiedRuleOpts) css_ast.Rule {
 	preludeLoc := p.tokens[preludeStart].Range.Loc
 
 loop:
@@ -1477,6 +1563,12 @@ loop:
 		switch p.current().Kind {
 		case css_lexer.TOpenBrace, css_lexer.TEndOfFile:
 			break loop
+
+		case css_lexer.TCloseBrace:
+			if !opts.isTopLevel {
+				break loop
+			}
+			p.parseComponentValue()
 
 		default:
 			p.parseComponentValue()
@@ -1487,10 +1579,11 @@ loop:
 		Prelude: p.convertTokens(p.tokens[preludeStart:p.index]),
 	}
 
+	matchingLoc := p.current().Range.Loc
 	if p.eat(css_lexer.TOpenBrace) {
 		qualified.Rules = p.parseListOfDeclarations()
-		p.expect(css_lexer.TCloseBrace)
-	} else if !isAlreadyInvalid {
+		p.expectWithMatchingLoc(css_lexer.TCloseBrace, matchingLoc)
+	} else if !opts.isAlreadyInvalid {
 		p.expect(css_lexer.TOpenBrace)
 	}
 
@@ -1574,7 +1667,7 @@ stop:
 		if corrected, ok := css_ast.MaybeCorrectDeclarationTypo(keyText); ok {
 			data := p.tracker.MsgData(keyToken.Range, fmt.Sprintf("%q is not a known CSS property", keyText))
 			data.Location.Suggestion = corrected
-			p.log.AddMsg(logger.Msg{Kind: logger.Warning, Data: data,
+			p.log.AddMsgID(logger.MsgID_CSS_UnsupportedCSSProperty, logger.Msg{Kind: logger.Warning, Data: data,
 				Notes: []logger.MsgData{{Text: fmt.Sprintf("Did you mean %q instead?", corrected)}}})
 		}
 	}
@@ -1611,10 +1704,11 @@ func (p *parser) parseComponentValue() {
 }
 
 func (p *parser) parseBlock(open css_lexer.T, close css_lexer.T) {
+	matchingLoc := p.current().Range.Loc
 	if p.expect(open) {
 		for !p.eat(close) {
 			if p.peek(css_lexer.TEndOfFile) {
-				p.expect(close)
+				p.expectWithMatchingLoc(close, matchingLoc)
 				return
 			}
 

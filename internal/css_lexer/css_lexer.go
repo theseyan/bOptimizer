@@ -4,8 +4,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/theseyan/boptimizer/internal/helpers"
-	"github.com/theseyan/boptimizer/internal/logger"
+	"github.com/evanw/esbuild/internal/helpers"
+	"github.com/evanw/esbuild/internal/logger"
 )
 
 // The lexer converts a source file to a stream of tokens. Unlike esbuild's
@@ -280,7 +280,7 @@ func (lexer *lexer) next() {
 					for end < len(contents) && !isNewline(rune(contents[end])) {
 						end++
 					}
-					lexer.log.Add(logger.Warning, &lexer.tracker, logger.Range{Loc: loc, Len: 2},
+					lexer.log.AddID(logger.MsgID_CSS_JSCommentInCSS, logger.Warning, &lexer.tracker, logger.Range{Loc: loc, Len: 2},
 						"Comments in CSS use \"/* ... */\" instead of \"//\"")
 					lexer.oldSingleLineCommentEnd.Start = int32(end)
 					lexer.Token.Flags |= DidWarnAboutSingleLineComment
@@ -412,7 +412,7 @@ func (lexer *lexer) next() {
 				lexer.Token.Kind = lexer.consumeIdentLike()
 			} else {
 				lexer.step()
-				lexer.log.Add(logger.Error, &lexer.tracker, lexer.Token.Range, "Invalid escape")
+				lexer.log.AddError(&lexer.tracker, lexer.Token.Range, "Invalid escape")
 				lexer.Token.Kind = TDelim
 			}
 
@@ -512,7 +512,7 @@ func (lexer *lexer) consumeToEndOfMultiLineComment(startRange logger.Range) {
 			}
 
 		case eof: // This indicates the end of the file
-			lexer.log.AddWithNotes(logger.Error, &lexer.tracker, logger.Range{Loc: logger.Loc{Start: lexer.Token.Range.End()}},
+			lexer.log.AddErrorWithNotes(&lexer.tracker, logger.Range{Loc: logger.Loc{Start: lexer.Token.Range.End()}},
 				"Expected \"*/\" to terminate multi-line comment",
 				[]logger.MsgData{lexer.tracker.MsgData(startRange, "The multi-line comment starts here:")})
 			return
@@ -610,12 +610,24 @@ func (lexer *lexer) wouldStartNumber() bool {
 	return false
 }
 
+// Note: This function is hot in profiles
 func (lexer *lexer) consumeName() string {
-	// Common case: no escapes, identifier is a substring of the input
-	for IsNameContinue(lexer.codePoint) {
+	// Common case: no escapes, identifier is a substring of the input. Doing this
+	// in a tight loop that avoids UTF-8 decoding and that increments a single
+	// number instead of doing "step()" is noticeably faster. For example, doing
+	// this sped up end-to-end parsing and printing of a large CSS file from 97ms
+	// to 84ms (around 15% faster).
+	contents := lexer.source.Contents
+	if IsNameContinue(lexer.codePoint) {
+		n := len(contents)
+		i := lexer.current
+		for i < n && IsNameContinue(rune(contents[i])) {
+			i++
+		}
+		lexer.current = i
 		lexer.step()
 	}
-	raw := lexer.source.Contents[lexer.Token.Range.Loc.Start:lexer.Token.Range.End()]
+	raw := contents[lexer.Token.Range.Loc.Start:lexer.Token.Range.End()]
 	if !lexer.isValidEscape() {
 		return raw
 	}
@@ -700,7 +712,7 @@ validURL:
 
 		case eof:
 			loc := logger.Loc{Start: lexer.Token.Range.End()}
-			lexer.log.Add(logger.Error, &lexer.tracker, logger.Range{Loc: loc}, "Expected \")\" to end URL token")
+			lexer.log.AddError(&lexer.tracker, logger.Range{Loc: loc}, "Expected \")\" to end URL token")
 			return TBadURL
 
 		case ' ', '\t', '\n', '\r', '\f':
@@ -710,7 +722,7 @@ validURL:
 			}
 			if lexer.codePoint != ')' {
 				loc := logger.Loc{Start: lexer.Token.Range.End()}
-				lexer.log.Add(logger.Error, &lexer.tracker, logger.Range{Loc: loc}, "Expected \")\" to end URL token")
+				lexer.log.AddError(&lexer.tracker, logger.Range{Loc: loc}, "Expected \")\" to end URL token")
 				break validURL
 			}
 			lexer.step()
@@ -718,13 +730,13 @@ validURL:
 
 		case '"', '\'', '(':
 			r := logger.Range{Loc: logger.Loc{Start: lexer.Token.Range.End()}, Len: 1}
-			lexer.log.Add(logger.Error, &lexer.tracker, r, "Expected \")\" to end URL token")
+			lexer.log.AddError(&lexer.tracker, r, "Expected \")\" to end URL token")
 			break validURL
 
 		case '\\':
 			if !lexer.isValidEscape() {
 				r := logger.Range{Loc: logger.Loc{Start: lexer.Token.Range.End()}, Len: 1}
-				lexer.log.Add(logger.Error, &lexer.tracker, r, "Invalid escape")
+				lexer.log.AddError(&lexer.tracker, r, "Invalid escape")
 				break validURL
 			}
 			lexer.consumeEscape()
@@ -732,7 +744,7 @@ validURL:
 		default:
 			if isNonPrintable(lexer.codePoint) {
 				r := logger.Range{Loc: logger.Loc{Start: lexer.Token.Range.End()}, Len: 1}
-				lexer.log.Add(logger.Error, &lexer.tracker, r, "Unexpected non-printable character in URL token")
+				lexer.log.AddError(&lexer.tracker, r, "Unexpected non-printable character in URL token")
 			}
 			lexer.step()
 		}
@@ -775,13 +787,13 @@ func (lexer *lexer) consumeString() T {
 			// Otherwise, fall through to ignore the character after the backslash
 
 		case eof:
-			lexer.log.Add(logger.Error, &lexer.tracker,
+			lexer.log.AddError(&lexer.tracker,
 				logger.Range{Loc: logger.Loc{Start: lexer.Token.Range.End()}},
 				"Unterminated string token")
 			return TBadString
 
 		case '\n', '\r', '\f':
-			lexer.log.Add(logger.Error, &lexer.tracker,
+			lexer.log.AddError(&lexer.tracker,
 				logger.Range{Loc: logger.Loc{Start: lexer.Token.Range.End()}},
 				"Unterminated string token")
 			return TBadString

@@ -3,7 +3,7 @@ package bundler
 import (
 	"testing"
 
-	"github.com/theseyan/boptimizer/internal/config"
+	"github.com/evanw/esbuild/internal/config"
 )
 
 var importstar_ts_suite = suite{

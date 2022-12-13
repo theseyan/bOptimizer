@@ -4,8 +4,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/theseyan/boptimizer/internal/css_ast"
-	"github.com/theseyan/boptimizer/internal/css_lexer"
+	"github.com/evanw/esbuild/internal/css_ast"
+	"github.com/evanw/esbuild/internal/css_lexer"
 )
 
 // Specification: https://drafts.csswg.org/css-fonts/#font-prop

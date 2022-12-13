@@ -8,13 +8,13 @@ package graph
 // things organized.
 
 import (
-	"github.com/theseyan/boptimizer/internal/ast"
-	"github.com/theseyan/boptimizer/internal/config"
-	"github.com/theseyan/boptimizer/internal/css_ast"
-	"github.com/theseyan/boptimizer/internal/js_ast"
-	"github.com/theseyan/boptimizer/internal/logger"
-	"github.com/theseyan/boptimizer/internal/resolver"
-	"github.com/theseyan/boptimizer/internal/sourcemap"
+	"github.com/evanw/esbuild/internal/ast"
+	"github.com/evanw/esbuild/internal/config"
+	"github.com/evanw/esbuild/internal/css_ast"
+	"github.com/evanw/esbuild/internal/js_ast"
+	"github.com/evanw/esbuild/internal/logger"
+	"github.com/evanw/esbuild/internal/resolver"
+	"github.com/evanw/esbuild/internal/sourcemap"
 )
 
 type InputFile struct {
@@ -22,10 +22,10 @@ type InputFile struct {
 	InputSourceMap *sourcemap.SourceMap
 
 	// If this file ends up being used in the bundle, these are additional files
-	// that must be written to the output directory. It's used by the "file"
-	// loader.
-	AdditionalFiles        []OutputFile
-	UniqueKeyForFileLoader string
+	// that must be written to the output directory. It's used by the "file" and
+	// "copy" loaders.
+	AdditionalFiles            []OutputFile
+	UniqueKeyForAdditionalFile string
 
 	SideEffects SideEffects
 	Source      logger.Source
@@ -76,8 +76,6 @@ const (
 
 type InputFileRepr interface {
 	ImportRecords() *[]ast.ImportRecord
-	DynamicExpressionImportRecords() *[]ast.DynamicExpressionImportRecord
-	ClaimDynamicExpressionImport(int, string)
 }
 
 type JSRepr struct {
@@ -92,14 +90,6 @@ type JSRepr struct {
 
 func (repr *JSRepr) ImportRecords() *[]ast.ImportRecord {
 	return &repr.AST.ImportRecords
-}
-
-func (repr *JSRepr) DynamicExpressionImportRecords() *[]ast.DynamicExpressionImportRecord {
-	return &repr.AST.DynamicExpressionImportRecords
-}
-
-func (repr *JSRepr) ClaimDynamicExpressionImport(importRecordIndex int, shimPath string) {
-	repr.AST.DynamicExpressionImportRecords[importRecordIndex].ShimPath = shimPath
 }
 
 func (repr *JSRepr) TopLevelSymbolToParts(ref js_ast.Ref) []uint32 {
@@ -125,8 +115,11 @@ func (repr *CSSRepr) ImportRecords() *[]ast.ImportRecord {
 	return &repr.AST.ImportRecords
 }
 
-func (repr *CSSRepr) DynamicExpressionImportRecords() *[]ast.DynamicExpressionImportRecord {
-	return &[]ast.DynamicExpressionImportRecord{}
+type CopyRepr struct {
+	// The URL that replaces the contents of any import record paths for this file
+	URLForCode string
 }
 
-func (repr *CSSRepr) ClaimDynamicExpressionImport(int, string) {}
+func (repr *CopyRepr) ImportRecords() *[]ast.ImportRecord {
+	return nil
+}

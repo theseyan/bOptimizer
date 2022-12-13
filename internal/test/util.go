@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/theseyan/boptimizer/internal/fs"
-	"github.com/theseyan/boptimizer/internal/logger"
+	"github.com/evanw/esbuild/internal/fs"
+	"github.com/evanw/esbuild/internal/logger"
 )
 
 func AssertEqual(t *testing.T, observed interface{}, expected interface{}) {
@@ -21,7 +21,7 @@ func AssertEqualWithDiff(t *testing.T, observed interface{}, expected interface{
 		stringA := fmt.Sprintf("%v", observed)
 		stringB := fmt.Sprintf("%v", expected)
 		color := !fs.CheckIfWindows()
-		t.Fatal(diff(stringB, stringA, color))
+		t.Fatal("\n" + diff(stringB, stringA, color))
 	}
 }
 

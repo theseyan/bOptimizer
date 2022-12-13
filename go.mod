@@ -1,5 +1,7 @@
-module github.com/theseyan/boptimizer
+module github.com/evanw/esbuild
 
-go 1.18
+// Support for Go 1.13 is deliberate so people can build esbuild
+// themselves for old OS versions. Please do not change this.
+go 1.13
 
-require golang.org/x/sys v0.0.0-20220818161305-2296e01440c6
+require golang.org/x/sys v0.0.0-20220715151400-c0bba94af5f8

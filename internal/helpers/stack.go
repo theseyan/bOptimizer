@@ -21,7 +21,7 @@ func PrettyPrintedStack() string {
 		// Indented lines are source locations
 		if strings.HasPrefix(line, "\t") {
 			line = line[1:]
-			line = strings.TrimPrefix(line, "github.com/theseyan/boptimizer/")
+			line = strings.TrimPrefix(line, "github.com/evanw/esbuild/")
 			if offset := strings.LastIndex(line, " +0x"); offset != -1 {
 				line = line[:offset]
 			}

@@ -3,8 +3,8 @@ package bundler
 import (
 	"testing"
 
-	"github.com/theseyan/boptimizer/internal/compat"
-	"github.com/theseyan/boptimizer/internal/config"
+	"github.com/evanw/esbuild/internal/compat"
+	"github.com/evanw/esbuild/internal/config"
 )
 
 var css_suite = suite{
@@ -705,5 +705,89 @@ func TestCSSNestingOldBrowser(t *testing.T) {
 		},
 		expectedScanLog: `entry.css: WARNING: CSS nesting syntax is not supported in the configured target environment (chrome10)
 `,
+	})
+}
+
+// The mapping of JS entry point to associated CSS bundle isn't necessarily 1:1.
+// Here is a case where it isn't. Two JS entry points share the same associated
+// CSS bundle. This must be reflected in the metafile by only having the JS
+// entry points point to the associated CSS bundle but not the other way around
+// (since there isn't one JS entry point to point to). This test mainly exists
+// to document this edge case.
+func TestMetafileCSSBundleTwoToOne(t *testing.T) {
+	css_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/foo/entry.js": `
+				import '../common.css'
+				console.log('foo')
+			`,
+			"/bar/entry.js": `
+				import '../common.css'
+				console.log('bar')
+			`,
+			"/common.css": `
+				body { color: red }
+			`,
+		},
+		entryPaths: []string{
+			"/foo/entry.js",
+			"/bar/entry.js",
+		},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+			EntryPathTemplate: []config.PathTemplate{
+				// "[ext]/[hash]"
+				{Data: "./", Placeholder: config.ExtPlaceholder},
+				{Data: "/", Placeholder: config.HashPlaceholder},
+			},
+			NeedsMetafile: true,
+		},
+	})
+}
+
+func TestDeduplicateRules(t *testing.T) {
+	// These are done as bundler tests instead of parser tests because rule
+	// deduplication now happens during linking (so that it has effects across files)
+	css_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/yes0.css": "a { color: red; color: green; color: red }",
+			"/yes1.css": "a { color: red } a { color: green } a { color: red }",
+			"/yes2.css": "@media screen { a { color: red } } @media screen { a { color: red } }",
+
+			"/no0.css": "@media screen { a { color: red } } @media screen { & a { color: red } }",
+			"/no1.css": "@media screen { a { color: red } } @media screen { a[x] { color: red } }",
+			"/no2.css": "@media screen { a { color: red } } @media screen { a.x { color: red } }",
+			"/no3.css": "@media screen { a { color: red } } @media screen { a#x { color: red } }",
+			"/no4.css": "@media screen { a { color: red } } @media screen { a:x { color: red } }",
+			"/no5.css": "@media screen { a:x { color: red } } @media screen { a:x(y) { color: red } }",
+			"/no6.css": "@media screen { a b { color: red } } @media screen { a + b { color: red } }",
+
+			"/across-files.css":   "@import 'across-files-0.css'; @import 'across-files-1.css'; @import 'across-files-2.css';",
+			"/across-files-0.css": "a { color: red; color: red }",
+			"/across-files-1.css": "a { color: green }",
+			"/across-files-2.css": "a { color: red }",
+		},
+		entryPaths: []string{
+			"/yes0.css",
+			"/yes1.css",
+			"/yes2.css",
+
+			"/no0.css",
+			"/no1.css",
+			"/no2.css",
+			"/no3.css",
+			"/no4.css",
+			"/no5.css",
+			"/no6.css",
+
+			"/across-files.css",
+		},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+			MinifySyntax: true,
+		},
+		expectedScanLog: "no0.css: WARNING: CSS nesting syntax cannot be used outside of a style rule\n",
 	})
 }

@@ -16,13 +16,13 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/theseyan/boptimizer/internal/cache"
-	"github.com/theseyan/boptimizer/internal/compat"
-	"github.com/theseyan/boptimizer/internal/config"
-	"github.com/theseyan/boptimizer/internal/fs"
-	"github.com/theseyan/boptimizer/internal/logger"
-	"github.com/theseyan/boptimizer/internal/resolver"
-	"github.com/theseyan/boptimizer/internal/test"
+	"github.com/evanw/esbuild/internal/cache"
+	"github.com/evanw/esbuild/internal/compat"
+	"github.com/evanw/esbuild/internal/config"
+	"github.com/evanw/esbuild/internal/fs"
+	"github.com/evanw/esbuild/internal/logger"
+	"github.com/evanw/esbuild/internal/resolver"
+	"github.com/evanw/esbuild/internal/test"
 )
 
 func es(version int) compat.JSFeature {
@@ -69,10 +69,34 @@ type suite struct {
 
 func (s *suite) expectBundled(t *testing.T, args bundled) {
 	t.Helper()
+	s.__expectBundledImpl(t, args, fs.MockUnix)
+	s.__expectBundledImpl(t, args, fs.MockWindows)
+}
+
+func (s *suite) expectBundledUnix(t *testing.T, args bundled) {
+	t.Helper()
+	s.__expectBundledImpl(t, args, fs.MockUnix)
+}
+
+func (s *suite) expectBundledWindows(t *testing.T, args bundled) {
+	t.Helper()
+	s.__expectBundledImpl(t, args, fs.MockWindows)
+}
+
+// Don't call this directly. Call the helpers above instead.
+func (s *suite) __expectBundledImpl(t *testing.T, args bundled, fsKind fs.MockKind) {
+	t.Helper()
+
 	testName := t.Name()
-	t.Run("", func(t *testing.T) {
+	subName := "Unix"
+	if fsKind == fs.MockWindows {
+		subName = "Windows"
+	}
+
+	t.Run(subName, func(t *testing.T) {
 		t.Helper()
-		fs := fs.MockFS(args.files)
+
+		// Prepare the options
 		if args.options.ExtensionOrder == nil {
 			args.options.ExtensionOrder = []string{".tsx", ".ts", ".jsx", ".js", ".css", ".json"}
 		}
@@ -83,19 +107,56 @@ func (s *suite) expectBundled(t *testing.T, args bundled) {
 			// Apply this default to all tests since it was not configurable when the tests were written
 			args.options.TreeShaking = true
 		}
+		if args.options.Mode == config.ModeBundle && args.options.OutputFormat == config.FormatPreserve {
+			// The format can't be "preserve" while bundling
+			args.options.OutputFormat = config.FormatESModule
+		}
 		logKind := logger.DeferLogNoVerboseOrDebug
 		if args.debugLogs {
 			logKind = logger.DeferLogAll
 		}
-		log := logger.NewDeferLog(logKind)
-		caches := cache.MakeCacheSet()
-		resolver := resolver.NewResolver(fs, log, caches, args.options)
 		entryPoints := make([]EntryPoint, 0, len(args.entryPaths)+len(args.entryPathsAdvanced))
 		for _, path := range args.entryPaths {
 			entryPoints = append(entryPoints, EntryPoint{InputPath: path})
 		}
 		entryPoints = append(entryPoints, args.entryPathsAdvanced...)
-		bundle := ScanBundle(log, fs, resolver, caches, entryPoints, args.options, nil)
+
+		// Handle conversion to Windows-style paths
+		if fsKind == fs.MockWindows {
+			for i, entry := range entryPoints {
+				entry.InputPath = unix2win(entry.InputPath)
+				entryPoints[i] = entry
+			}
+
+			for i, absPath := range args.options.InjectAbsPaths {
+				args.options.InjectAbsPaths[i] = unix2win(absPath)
+			}
+
+			for key, value := range args.options.PackageAliases {
+				if strings.HasPrefix(value, "/") {
+					args.options.PackageAliases[key] = unix2win(value)
+				}
+			}
+
+			replace := make(map[string]bool)
+			for k, v := range args.options.ExternalSettings.PostResolve.Exact {
+				replace[unix2win(k)] = v
+			}
+			args.options.ExternalSettings.PostResolve.Exact = replace
+
+			args.options.AbsOutputFile = unix2win(args.options.AbsOutputFile)
+			args.options.AbsOutputBase = unix2win(args.options.AbsOutputBase)
+			args.options.AbsOutputDir = unix2win(args.options.AbsOutputDir)
+			args.options.TsConfigOverride = unix2win(args.options.TsConfigOverride)
+		}
+
+		// Run the bundler
+		log := logger.NewDeferLog(logKind, nil)
+		caches := cache.MakeCacheSet()
+		mockFS := fs.MockFS(args.files, fsKind)
+		args.options.OmitRuntimeForTests = true
+		resolver := resolver.NewResolver(mockFS, log, caches, args.options)
+		bundle := ScanBundle(log, mockFS, resolver, caches, entryPoints, args.options, nil)
 		msgs := log.Done()
 		assertLog(t, msgs, args.expectedScanLog)
 
@@ -104,9 +165,8 @@ func (s *suite) expectBundled(t *testing.T, args bundled) {
 			return
 		}
 
-		log = logger.NewDeferLog(logKind)
-		args.options.OmitRuntimeForTests = true
-		results, _ := bundle.Compile(log, args.options, nil, nil)
+		log = logger.NewDeferLog(logKind, nil)
+		results, metafileJSON := bundle.Compile(log, nil, nil)
 		msgs = log.Done()
 		assertLog(t, msgs, args.expectedCompileLog)
 
@@ -124,8 +184,14 @@ func (s *suite) expectBundled(t *testing.T, args bundled) {
 				if generated != "" {
 					generated += "\n"
 				}
+				if fsKind == fs.MockWindows {
+					result.AbsPath = win2unix(result.AbsPath)
+				}
 				generated += fmt.Sprintf("---------- %s ----------\n%s", result.AbsPath, string(result.Contents))
 			}
+		}
+		if metafileJSON != "" {
+			generated += fmt.Sprintf("---------- metafile.json ----------\n%s", metafileJSON)
 		}
 		s.compareSnapshot(t, testName, generated)
 	})
@@ -234,4 +300,20 @@ func TestMain(m *testing.M) {
 		}
 	}
 	os.Exit(code)
+}
+
+func win2unix(p string) string {
+	if strings.HasPrefix(p, "C:\\") {
+		p = p[2:]
+	}
+	p = strings.ReplaceAll(p, "\\", "/")
+	return p
+}
+
+func unix2win(p string) string {
+	p = strings.ReplaceAll(p, "/", "\\")
+	if strings.HasPrefix(p, "\\") {
+		p = "C:" + p
+	}
+	return p
 }

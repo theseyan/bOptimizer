@@ -1,9 +1,9 @@
 package js_parser
 
 import (
-	"github.com/theseyan/boptimizer/internal/helpers"
-	"github.com/theseyan/boptimizer/internal/js_lexer"
-	"github.com/theseyan/boptimizer/internal/logger"
+	"github.com/evanw/esbuild/internal/helpers"
+	"github.com/evanw/esbuild/internal/js_lexer"
+	"github.com/evanw/esbuild/internal/logger"
 )
 
 func ParseGlobalName(log logger.Log, source logger.Source) (result []string, ok bool) {

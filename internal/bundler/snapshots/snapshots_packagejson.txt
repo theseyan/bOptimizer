@@ -72,6 +72,26 @@ var require_foo = __commonJS({
 require_foo();
 
 ================================================================================
+TestPackageJsonBrowserIssue2002C
+---------- /Users/user/project/out.js ----------
+// Users/user/project/src/node_modules/sub/index.js
+var require_sub = __commonJS({
+  "Users/user/project/src/node_modules/sub/index.js"() {
+    works();
+  }
+});
+
+// Users/user/project/src/node_modules/pkg/sub/foo.js
+var require_foo = __commonJS({
+  "Users/user/project/src/node_modules/pkg/sub/foo.js"() {
+    require_sub();
+  }
+});
+
+// Users/user/project/src/entry.js
+require_foo();
+
+================================================================================
 TestPackageJsonBrowserMapAvoidMissing
 ---------- /Users/user/project/out.js ----------
 // Users/user/project/node_modules/component-indexof/index.js
@@ -590,6 +610,18 @@ console.log("SUCCESS");
 console.log("SUCCESS");
 
 ================================================================================
+TestPackageJsonExportsPatternTrailers
+---------- /Users/user/project/out.js ----------
+// Users/user/project/node_modules/pkg/dir/baz-foo.js
+console.log("works");
+
+// Users/user/project/node_modules/pkg2/public/abc.js
+console.log("abc");
+
+// Users/user/project/node_modules/pkg2/public/xyz.js
+console.log("xyz");
+
+================================================================================
 TestPackageJsonExportsRequireOverImport
 ---------- /Users/user/project/out.js ----------
 // Users/user/project/node_modules/pkg/require.js
@@ -601,6 +633,85 @@ var require_require = __commonJS({
 
 // Users/user/project/src/entry.js
 require_require();
+
+================================================================================
+TestPackageJsonExportsWildcard
+---------- /Users/user/project/out.js ----------
+// Users/user/project/node_modules/pkg1/file.js
+console.log("SUCCESS");
+
+// Users/user/project/node_modules/pkg1/file2.js
+console.log("SUCCESS");
+
+================================================================================
+TestPackageJsonImportSelfUsingImport
+---------- /Users/user/project/out.js ----------
+// Users/user/project/src/foo-import.js
+var foo_import_default = "foo";
+
+// Users/user/project/src/index.js
+var src_default = "index";
+console.log(src_default, foo_import_default);
+export {
+  src_default as default
+};
+
+================================================================================
+TestPackageJsonImportSelfUsingImportScoped
+---------- /Users/user/project/out.js ----------
+// Users/user/project/src/foo-import.js
+var foo_import_default = "foo";
+
+// Users/user/project/src/index.js
+var src_default = "index";
+console.log(src_default, foo_import_default);
+export {
+  src_default as default
+};
+
+================================================================================
+TestPackageJsonImportSelfUsingRequire
+---------- /Users/user/project/out.js ----------
+// Users/user/project/src/foo-require.js
+var require_foo_require = __commonJS({
+  "Users/user/project/src/foo-require.js"(exports, module) {
+    module.exports = "foo";
+  }
+});
+
+// Users/user/project/src/index.js
+var require_src = __commonJS({
+  "Users/user/project/src/index.js"(exports, module) {
+    module.exports = "index";
+    console.log(
+      require_src(),
+      require_foo_require()
+    );
+  }
+});
+export default require_src();
+
+================================================================================
+TestPackageJsonImportSelfUsingRequireScoped
+---------- /Users/user/project/out.js ----------
+// Users/user/project/src/foo-require.js
+var require_foo_require = __commonJS({
+  "Users/user/project/src/foo-require.js"(exports, module) {
+    module.exports = "foo";
+  }
+});
+
+// Users/user/project/src/index.js
+var require_src = __commonJS({
+  "Users/user/project/src/index.js"(exports, module) {
+    module.exports = "index";
+    console.log(
+      require_src(),
+      require_foo_require()
+    );
+  }
+});
+export default require_src();
 
 ================================================================================
 TestPackageJsonImports

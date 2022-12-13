@@ -3,7 +3,7 @@ package bundler
 import (
 	"testing"
 
-	"github.com/theseyan/boptimizer/internal/config"
+	"github.com/evanw/esbuild/internal/config"
 )
 
 var importstar_suite = suite{
@@ -1803,5 +1803,35 @@ entry-nope.js: WARNING: Import "nope" will always be undefined because the file 
 entry-nope.js: WARNING: Import "nope" will always be undefined because the file "foo/no-side-effects.mjs" has no exports
 entry-nope.js: WARNING: Import "nope" will always be undefined because the file "foo/no-side-effects.cjs" has no exports
 `,
+	})
+}
+
+// Failure case due to a bug in https://github.com/evanw/esbuild/pull/2059
+func TestReExportStarEntryPointAndInnerFile(t *testing.T) {
+	importstar_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				export * from 'a'
+				import * as inner from './inner.js'
+				export { inner }
+			`,
+			"/inner.js": `
+				export * from 'b'
+			`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+			OutputFormat: config.FormatCommonJS,
+			ExternalSettings: config.ExternalSettings{
+				PreResolve: config.ExternalMatchers{
+					Exact: map[string]bool{
+						"a": true,
+						"b": true,
+					},
+				},
+			},
+		},
 	})
 }

@@ -3,8 +3,8 @@ package bundler
 import (
 	"testing"
 
-	"github.com/theseyan/boptimizer/internal/compat"
-	"github.com/theseyan/boptimizer/internal/config"
+	"github.com/evanw/esbuild/internal/compat"
+	"github.com/evanw/esbuild/internal/config"
 )
 
 var loader_suite = suite{
@@ -957,5 +957,330 @@ func TestLoaderDataURLUnknownMIME(t *testing.T) {
 			Mode:         config.ModeBundle,
 			AbsOutputDir: "/out",
 		},
+	})
+}
+
+func TestLoaderDataURLExtensionBasedMIME(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.foo": `
+				export { default as css }   from "./example.css"
+				export { default as eot }   from "./example.eot"
+				export { default as gif }   from "./example.gif"
+				export { default as htm }   from "./example.htm"
+				export { default as html }  from "./example.html"
+				export { default as jpeg }  from "./example.jpeg"
+				export { default as jpg }   from "./example.jpg"
+				export { default as js }    from "./example.js"
+				export { default as json }  from "./example.json"
+				export { default as mjs }   from "./example.mjs"
+				export { default as otf }   from "./example.otf"
+				export { default as pdf }   from "./example.pdf"
+				export { default as png }   from "./example.png"
+				export { default as sfnt }  from "./example.sfnt"
+				export { default as svg }   from "./example.svg"
+				export { default as ttf }   from "./example.ttf"
+				export { default as wasm }  from "./example.wasm"
+				export { default as webp }  from "./example.webp"
+				export { default as woff }  from "./example.woff"
+				export { default as woff2 } from "./example.woff2"
+				export { default as xml }   from "./example.xml"
+			`,
+			"/example.css":   `css`,
+			"/example.eot":   `eot`,
+			"/example.gif":   `gif`,
+			"/example.htm":   `htm`,
+			"/example.html":  `html`,
+			"/example.jpeg":  `jpeg`,
+			"/example.jpg":   `jpg`,
+			"/example.js":    `js`,
+			"/example.json":  `json`,
+			"/example.mjs":   `mjs`,
+			"/example.otf":   `otf`,
+			"/example.pdf":   `pdf`,
+			"/example.png":   `png`,
+			"/example.sfnt":  `sfnt`,
+			"/example.svg":   `svg`,
+			"/example.ttf":   `ttf`,
+			"/example.wasm":  `wasm`,
+			"/example.webp":  `webp`,
+			"/example.woff":  `woff`,
+			"/example.woff2": `woff2`,
+			"/example.xml":   `xml`,
+		},
+		entryPaths: []string{"/entry.foo"},
+		options: config.Options{
+			Mode:         config.ModeBundle,
+			AbsOutputDir: "/out",
+			ExtensionToLoader: map[string]config.Loader{
+				".foo":   config.LoaderJS,
+				".css":   config.LoaderDataURL,
+				".eot":   config.LoaderDataURL,
+				".gif":   config.LoaderDataURL,
+				".htm":   config.LoaderDataURL,
+				".html":  config.LoaderDataURL,
+				".jpeg":  config.LoaderDataURL,
+				".jpg":   config.LoaderDataURL,
+				".js":    config.LoaderDataURL,
+				".json":  config.LoaderDataURL,
+				".mjs":   config.LoaderDataURL,
+				".otf":   config.LoaderDataURL,
+				".pdf":   config.LoaderDataURL,
+				".png":   config.LoaderDataURL,
+				".sfnt":  config.LoaderDataURL,
+				".svg":   config.LoaderDataURL,
+				".ttf":   config.LoaderDataURL,
+				".wasm":  config.LoaderDataURL,
+				".webp":  config.LoaderDataURL,
+				".woff":  config.LoaderDataURL,
+				".woff2": config.LoaderDataURL,
+				".xml":   config.LoaderDataURL,
+			},
+		},
+	})
+}
+
+// Percent-encoded data URLs should switch over to base64
+// data URLs if it would result in a smaller size
+func TestLoaderDataURLBase64VsPercentEncoding(t *testing.T) {
+	loader_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				import a from './shouldUsePercent_1.txt'
+				import b from './shouldUsePercent_2.txt'
+				import c from './shouldUseBase64_1.txt'
+				import d from './shouldUseBase64_2.txt'
+				console.log(
+					a,
+					b,
+					c,
+					d,
+				)
+			`,
+			"/shouldUsePercent_1.txt": "\n\n\n",
+			"/shouldUsePercent_2.txt": "\n\n\n\n",
+			"/shouldUseBase64_1.txt":  "\n\n\n\n\n",
+			"/shouldUseBase64_2.txt":  "\n\n\n\n\n\n",
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/out.js",
+			ExtensionToLoader: map[string]config.Loader{
+				".js":  config.LoaderJS,
+				".txt": config.LoaderDataURL,
+			},
+		},
+	})
+}
+
+func TestLoaderDataURLBase64InvalidUTF8(t *testing.T) {
+	loader_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				import a from './binary.txt'
+				console.log(a)
+			`,
+			"/binary.txt": "\xFF",
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/out.js",
+			ExtensionToLoader: map[string]config.Loader{
+				".js":  config.LoaderJS,
+				".txt": config.LoaderDataURL,
+			},
+		},
+	})
+}
+
+func TestLoaderDataURLEscapePercents(t *testing.T) {
+	loader_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				import a from './percents.txt'
+				console.log(a)
+			`,
+			"/percents.txt": `
+%, %3, %33, %333
+%, %e, %ee, %eee
+%, %E, %EE, %EEE
+`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputFile: "/out.js",
+			ExtensionToLoader: map[string]config.Loader{
+				".js":  config.LoaderJS,
+				".txt": config.LoaderDataURL,
+			},
+		},
+	})
+}
+
+func TestLoaderCopyWithBundleFromJS(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/Users/user/project/src/entry.js": `
+				import x from "../assets/some.file"
+				console.log(x)
+			`,
+			"/Users/user/project/assets/some.file": `stuff`,
+		},
+		entryPaths: []string{"/Users/user/project/src/entry.js"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputBase: "/Users/user/project",
+			AbsOutputDir:  "/out",
+			ExtensionToLoader: map[string]config.Loader{
+				".js":   config.LoaderJS,
+				".file": config.LoaderCopy,
+			},
+		},
+	})
+}
+
+func TestLoaderCopyWithBundleFromCSS(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/Users/user/project/src/entry.css": `
+				body {
+					background: url(../assets/some.file);
+				}
+			`,
+			"/Users/user/project/assets/some.file": `stuff`,
+		},
+		entryPaths: []string{"/Users/user/project/src/entry.css"},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputBase: "/Users/user/project",
+			AbsOutputDir:  "/out",
+			ExtensionToLoader: map[string]config.Loader{
+				".css":  config.LoaderCSS,
+				".file": config.LoaderCopy,
+			},
+		},
+	})
+}
+
+func TestLoaderCopyWithBundleEntryPoint(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/Users/user/project/src/entry.js": `
+				import x from "../assets/some.file"
+				console.log(x)
+			`,
+			"/Users/user/project/src/entry.css": `
+				body {
+					background: url(../assets/some.file);
+				}
+			`,
+			"/Users/user/project/assets/some.file": `stuff`,
+		},
+		entryPaths: []string{
+			"/Users/user/project/src/entry.js",
+			"/Users/user/project/src/entry.css",
+			"/Users/user/project/assets/some.file",
+		},
+		options: config.Options{
+			Mode:          config.ModeBundle,
+			AbsOutputBase: "/Users/user/project",
+			AbsOutputDir:  "/out",
+			ExtensionToLoader: map[string]config.Loader{
+				".js":   config.LoaderJS,
+				".css":  config.LoaderCSS,
+				".file": config.LoaderCopy,
+			},
+		},
+	})
+}
+
+func TestLoaderCopyWithTransform(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/Users/user/project/src/entry.js":     `console.log('entry')`,
+			"/Users/user/project/assets/some.file": `stuff`,
+		},
+		entryPaths: []string{
+			"/Users/user/project/src/entry.js",
+			"/Users/user/project/assets/some.file",
+		},
+		options: config.Options{
+			Mode:          config.ModePassThrough,
+			AbsOutputBase: "/Users/user/project",
+			AbsOutputDir:  "/out",
+			ExtensionToLoader: map[string]config.Loader{
+				".js":   config.LoaderJS,
+				".file": config.LoaderCopy,
+			},
+		},
+	})
+}
+
+func TestLoaderCopyWithFormat(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/Users/user/project/src/entry.js":     `console.log('entry')`,
+			"/Users/user/project/assets/some.file": `stuff`,
+		},
+		entryPaths: []string{
+			"/Users/user/project/src/entry.js",
+			"/Users/user/project/assets/some.file",
+		},
+		options: config.Options{
+			Mode:          config.ModeConvertFormat,
+			OutputFormat:  config.FormatIIFE,
+			AbsOutputBase: "/Users/user/project",
+			AbsOutputDir:  "/out",
+			ExtensionToLoader: map[string]config.Loader{
+				".js":   config.LoaderJS,
+				".file": config.LoaderCopy,
+			},
+		},
+	})
+}
+
+func TestJSXAutomaticNoNameCollision(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.jsx": `
+				import { Link } from "@remix-run/react"
+				const x = <Link {...y} key={z} />
+			`,
+		},
+		entryPaths: []string{"/entry.jsx"},
+		options: config.Options{
+			Mode:          config.ModeConvertFormat,
+			OutputFormat:  config.FormatCommonJS,
+			AbsOutputFile: "/out.js",
+			JSX: config.JSXOptions{
+				AutomaticRuntime: true,
+			},
+		},
+	})
+}
+
+func TestAssertTypeJSONWrongLoader(t *testing.T) {
+	default_suite.expectBundled(t, bundled{
+		files: map[string]string{
+			"/entry.js": `
+				import foo from './foo.json' assert { type: 'json' }
+			`,
+			"/foo.json": `{}`,
+		},
+		entryPaths: []string{"/entry.js"},
+		options: config.Options{
+			Mode: config.ModeBundle,
+			ExtensionToLoader: map[string]config.Loader{
+				".js":   config.LoaderJS,
+				".json": config.LoaderJS,
+			},
+		},
+		expectedScanLog: `entry.js: ERROR: The file "foo.json" was loaded with the "js" loader
+entry.js: NOTE: This import assertion requires the loader to be "json" instead:
+NOTE: You need to either reconfigure esbuild to ensure that the loader for this file is "json" or you need to remove this import assertion.
+`,
 	})
 }

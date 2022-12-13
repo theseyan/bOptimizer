@@ -3,10 +3,10 @@ package css_ast
 import (
 	"strconv"
 
-	"github.com/theseyan/boptimizer/internal/ast"
-	"github.com/theseyan/boptimizer/internal/css_lexer"
-	"github.com/theseyan/boptimizer/internal/helpers"
-	"github.com/theseyan/boptimizer/internal/logger"
+	"github.com/evanw/esbuild/internal/ast"
+	"github.com/evanw/esbuild/internal/css_lexer"
+	"github.com/evanw/esbuild/internal/helpers"
+	"github.com/evanw/esbuild/internal/logger"
 )
 
 // CSS syntax comes in two layers: a minimal syntax that generally accepts

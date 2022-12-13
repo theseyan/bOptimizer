@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/theseyan/boptimizer/pkg/api"
+	"github.com/evanw/esbuild/pkg/api"
 )
 
 import "C"
@@ -36,6 +36,10 @@ func build(entry *C.char, out *C.char, externals *C.char) *C.char {
 		MinifyIdentifiers: true,
 		MinifySyntax:      true,
 		Metafile: true,
+		LogOverride: map[string]api.LogLevel{
+			"unsupported-dynamic-import": api.LogLevelWarning,
+			"unsupported-require-call": api.LogLevelWarning,
+		},
 	})
 	
 	if len(result.Errors) > 0 {
@@ -57,6 +61,6 @@ func build(entry *C.char, out *C.char, externals *C.char) *C.char {
 }
 
 func main() {
-	// result := C.GoString(build(C.CString("test/myapp/index.js"), C.CString("bundle.js"), C.CString("")));
-	// println(result)
+	result := C.GoString(build(C.CString("test/myapp/index.js"), C.CString("bundle.js"), C.CString("")));
+	println(result)
 }

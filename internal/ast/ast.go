@@ -1,6 +1,9 @@
 package ast
 
-import "github.com/theseyan/boptimizer/internal/logger"
+import (
+	"github.com/evanw/esbuild/internal/helpers"
+	"github.com/evanw/esbuild/internal/logger"
+)
 
 // This file contains data structures that are used with the AST packages for
 // both JavaScript and CSS. This helps the bundler treat both AST formats in
@@ -110,6 +113,9 @@ const (
 
 	// If true, this import can be removed if it's unused
 	IsExternalWithoutSideEffects
+
+	// If true, "assert { type: 'json' }" was present
+	AssertTypeJSON
 )
 
 func (flags ImportRecordFlags) Has(flag ImportRecordFlags) bool {
@@ -126,22 +132,15 @@ type ImportRecord struct {
 	ErrorHandlerLoc logger.Loc
 
 	// The resolved source index for an internal import (within the bundle) or
-	// nil for an external import (not included in the bundle)
+	// invalid for an external import (not included in the bundle)
 	SourceIndex Index32
+
+	// Files imported via the "copy" loader use this instead of "SourceIndex"
+	// because they are sort of like external imports, and are not bundled.
+	CopySourceIndex Index32
 
 	Flags ImportRecordFlags
 	Kind  ImportKind
-}
-
-type DynamicExpressionImportRecord struct {
-	Range      logger.Range
-	Expression string
-
-	// Path to the generated module that replaces the dynamic expression import.
-	// If empty, the import statement will be left as is
-	ShimPath string
-
-	Kind ImportKind
 }
 
 type AssertEntry struct {
@@ -150,6 +149,15 @@ type AssertEntry struct {
 	KeyLoc          logger.Loc
 	ValueLoc        logger.Loc
 	PreferQuotedKey bool
+}
+
+func FindAssertion(assertions []AssertEntry, name string) *AssertEntry {
+	for _, assertion := range assertions {
+		if helpers.UTF16EqualsString(assertion.Key, name) {
+			return &assertion
+		}
+	}
+	return nil
 }
 
 // This stores a 32-bit index where the zero value is an invalid index. This is

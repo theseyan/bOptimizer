@@ -17,11 +17,11 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/theseyan/boptimizer/internal/ast"
-	"github.com/theseyan/boptimizer/internal/helpers"
-	"github.com/theseyan/boptimizer/internal/js_ast"
-	"github.com/theseyan/boptimizer/internal/logger"
-	"github.com/theseyan/boptimizer/internal/runtime"
+	"github.com/evanw/esbuild/internal/ast"
+	"github.com/evanw/esbuild/internal/helpers"
+	"github.com/evanw/esbuild/internal/js_ast"
+	"github.com/evanw/esbuild/internal/logger"
+	"github.com/evanw/esbuild/internal/runtime"
 )
 
 type entryPointKind uint8
@@ -189,6 +189,13 @@ func CloneLinkerGraph(
 							dynamicImportEntryPointsMutex.Lock()
 							dynamicImportEntryPoints = append(dynamicImportEntryPoints, record.SourceIndex.GetIndex())
 							dynamicImportEntryPointsMutex.Unlock()
+
+							// Remove import assertions for dynamic imports of additional
+							// entry points so that they don't mess with the run-time behavior.
+							// For example, "import('./foo.json', { assert: { type: 'json' } })"
+							// will likely be converted into an import of a JavaScript file and
+							// leaving the import assertion there will prevent it from working.
+							record.Assertions = nil
 						}
 					}
 				}

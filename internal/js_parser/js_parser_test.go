@@ -5,21 +5,21 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/theseyan/boptimizer/internal/compat"
-	"github.com/theseyan/boptimizer/internal/config"
-	"github.com/theseyan/boptimizer/internal/helpers"
-	"github.com/theseyan/boptimizer/internal/js_ast"
-	"github.com/theseyan/boptimizer/internal/js_printer"
-	"github.com/theseyan/boptimizer/internal/logger"
-	"github.com/theseyan/boptimizer/internal/renamer"
-	"github.com/theseyan/boptimizer/internal/test"
+	"github.com/evanw/esbuild/internal/compat"
+	"github.com/evanw/esbuild/internal/config"
+	"github.com/evanw/esbuild/internal/helpers"
+	"github.com/evanw/esbuild/internal/js_ast"
+	"github.com/evanw/esbuild/internal/js_printer"
+	"github.com/evanw/esbuild/internal/logger"
+	"github.com/evanw/esbuild/internal/renamer"
+	"github.com/evanw/esbuild/internal/test"
 )
 
 func expectParseErrorCommon(t *testing.T, contents string, expected string, options config.Options) {
 	t.Helper()
 	t.Run(contents, func(t *testing.T) {
 		t.Helper()
-		log := logger.NewDeferLog(logger.DeferLogNoVerboseOrDebug)
+		log := logger.NewDeferLog(logger.DeferLogNoVerboseOrDebug, nil)
 		Parse(log, test.SourceForTest(contents), OptionsFromConfig(&options))
 		msgs := log.Done()
 		text := ""
@@ -44,11 +44,18 @@ func expectParseErrorTarget(t *testing.T, esVersion int, contents string, expect
 	})
 }
 
+func expectParseErrorWithUnsupportedFeatures(t *testing.T, unsupportedJSFeatures compat.JSFeature, contents string, expected string) {
+	t.Helper()
+	expectParseErrorCommon(t, contents, expected, config.Options{
+		UnsupportedJSFeatures: unsupportedJSFeatures,
+	})
+}
+
 func expectPrintedCommon(t *testing.T, contents string, expected string, options config.Options) {
 	t.Helper()
 	t.Run(contents, func(t *testing.T) {
 		t.Helper()
-		log := logger.NewDeferLog(logger.DeferLogNoVerboseOrDebug)
+		log := logger.NewDeferLog(logger.DeferLogNoVerboseOrDebug, nil)
 		options.OmitRuntimeForTests = true
 		tree, ok := Parse(log, test.SourceForTest(contents), OptionsFromConfig(&options))
 		msgs := log.Done()
@@ -83,6 +90,11 @@ func expectPrintedMangle(t *testing.T, contents string, expected string) {
 	expectPrintedCommon(t, contents, expected, config.Options{
 		MinifySyntax: true,
 	})
+}
+
+func expectPrintedNormalAndMangle(t *testing.T, contents string, normal string, mangle string) {
+	expectPrinted(t, contents, normal)
+	expectPrintedMangle(t, contents, mangle)
 }
 
 func expectPrintedTarget(t *testing.T, esVersion int, contents string, expected string) {
@@ -149,26 +161,57 @@ func expectPrintedJSX(t *testing.T, contents string, expected string) {
 	})
 }
 
-func expectParseErrorTargetJSX(t *testing.T, esVersion int, contents string, expected string) {
+func expectPrintedJSXSideEffects(t *testing.T, contents string, expected string) {
 	t.Helper()
-	expectParseErrorCommon(t, contents, expected, config.Options{
-		UnsupportedJSFeatures: compat.UnsupportedJSFeatures(map[compat.Engine][]int{
-			compat.ES: {esVersion},
-		}),
+	expectPrintedCommon(t, contents, expected, config.Options{
+		JSX: config.JSXOptions{
+			Parse:       true,
+			SideEffects: true,
+		},
+	})
+}
+
+func expectPrintedMangleJSX(t *testing.T, contents string, expected string) {
+	t.Helper()
+	expectPrintedCommon(t, contents, expected, config.Options{
+		MinifySyntax: true,
 		JSX: config.JSXOptions{
 			Parse: true,
 		},
 	})
 }
 
-func expectPrintedTargetJSX(t *testing.T, esVersion int, contents string, expected string) {
+type JSXAutomaticTestOptions struct {
+	Development            bool
+	ImportSource           string
+	OmitJSXRuntimeForTests bool
+	SideEffects            bool
+}
+
+func expectParseErrorJSXAutomatic(t *testing.T, options JSXAutomaticTestOptions, contents string, expected string) {
+	t.Helper()
+	expectParseErrorCommon(t, contents, expected, config.Options{
+		OmitJSXRuntimeForTests: options.OmitJSXRuntimeForTests,
+		JSX: config.JSXOptions{
+			AutomaticRuntime: true,
+			Parse:            true,
+			Development:      options.Development,
+			ImportSource:     options.ImportSource,
+			SideEffects:      options.SideEffects,
+		},
+	})
+}
+
+func expectPrintedJSXAutomatic(t *testing.T, options JSXAutomaticTestOptions, contents string, expected string) {
 	t.Helper()
 	expectPrintedCommon(t, contents, expected, config.Options{
-		UnsupportedJSFeatures: compat.UnsupportedJSFeatures(map[compat.Engine][]int{
-			compat.ES: {esVersion},
-		}),
+		OmitJSXRuntimeForTests: options.OmitJSXRuntimeForTests,
 		JSX: config.JSXOptions{
-			Parse: true,
+			AutomaticRuntime: true,
+			Parse:            true,
+			Development:      options.Development,
+			ImportSource:     options.ImportSource,
+			SideEffects:      options.SideEffects,
 		},
 	})
 }
@@ -569,6 +612,20 @@ func TestAwait(t *testing.T) {
 	expectPrinted(t, "await (x * y)", "await (x * y);\n")
 	expectPrinted(t, "await (x ** y)", "await (x ** y);\n")
 
+	expectParseError(t, "var { await } = {}", "<stdin>: ERROR: Cannot use \"await\" as an identifier here:\n")
+	expectParseError(t, "async function f() { var { await } = {} }", "<stdin>: ERROR: Cannot use \"await\" as an identifier here:\n")
+	expectParseError(t, "async function* f() { var { await } = {} }", "<stdin>: ERROR: Cannot use \"await\" as an identifier here:\n")
+	expectParseError(t, "class C { async f() { var { await } = {} } }", "<stdin>: ERROR: Cannot use \"await\" as an identifier here:\n")
+	expectParseError(t, "class C { async* f() { var { await } = {} } }", "<stdin>: ERROR: Cannot use \"await\" as an identifier here:\n")
+	expectParseError(t, "class C { static { var { await } = {} } }", "<stdin>: ERROR: Cannot use \"await\" as an identifier here:\n")
+
+	expectParseError(t, "var {} = { await }", "<stdin>: ERROR: Cannot use \"await\" as an identifier here:\n")
+	expectParseError(t, "async function f() { var {} = { await } }", "<stdin>: ERROR: Cannot use \"await\" as an identifier here:\n")
+	expectParseError(t, "async function* f() { var {} = { await } }", "<stdin>: ERROR: Cannot use \"await\" as an identifier here:\n")
+	expectParseError(t, "class C { async f() { var {} = { await } } }", "<stdin>: ERROR: Cannot use \"await\" as an identifier here:\n")
+	expectParseError(t, "class C { async* f() { var {} = { await } } }", "<stdin>: ERROR: Cannot use \"await\" as an identifier here:\n")
+	expectParseError(t, "class C { static { var {} = { await } } }", "<stdin>: ERROR: Cannot use \"await\" as an identifier here:\n")
+
 	expectParseError(t, "await delete x",
 		`<stdin>: ERROR: Delete of a bare identifier cannot be used in an ECMAScript module
 <stdin>: NOTE: This file is considered to be an ECMAScript module because of the top-level "await" keyword here:
@@ -577,12 +634,16 @@ func TestAwait(t *testing.T) {
 }
 
 func TestRegExp(t *testing.T) {
+	expectPrinted(t, "/x/d", "/x/d;\n")
 	expectPrinted(t, "/x/g", "/x/g;\n")
 	expectPrinted(t, "/x/i", "/x/i;\n")
 	expectPrinted(t, "/x/m", "/x/m;\n")
 	expectPrinted(t, "/x/s", "/x/s;\n")
 	expectPrinted(t, "/x/u", "/x/u;\n")
 	expectPrinted(t, "/x/y", "/x/y;\n")
+
+	expectParseError(t, "/)/", "<stdin>: ERROR: Unexpected \")\" in regular expression\n")
+	expectPrinted(t, "/[\\])]/", "/[\\])]/;\n")
 
 	expectParseError(t, "/x/msuygig",
 		`<stdin>: ERROR: Duplicate flag "g" in regular expression
@@ -1122,6 +1183,12 @@ func TestPattern(t *testing.T) {
 
 	expectPrinted(t, "let {1_2_3n: x} = y", "let { 123n: x } = y;\n")
 	expectPrinted(t, "let {0x1_2_3n: x} = y", "let { 0x123n: x } = y;\n")
+
+	expectParseError(t, "var [ (x) ] = 0", "<stdin>: ERROR: Expected identifier but found \"(\"\n")
+	expectParseError(t, "var [ ...(x) ] = 0", "<stdin>: ERROR: Expected identifier but found \"(\"\n")
+	expectParseError(t, "var { (x) } = 0", "<stdin>: ERROR: Expected identifier but found \"(\"\n")
+	expectParseError(t, "var { x: (y) } = 0", "<stdin>: ERROR: Expected identifier but found \"(\"\n")
+	expectParseError(t, "var { ...(x) } = 0", "<stdin>: ERROR: Expected identifier but found \"(\"\n")
 }
 
 func TestAssignTarget(t *testing.T) {
@@ -1135,6 +1202,12 @@ func TestAssignTarget(t *testing.T) {
 	expectParseError(t, "({...x} = 0)", "")
 	expectParseError(t, "({x = 0} = 0)", "")
 	expectParseError(t, "({x: y = 0} = 0)", "")
+
+	expectParseError(t, "[ (y) ] = 0", "")
+	expectParseError(t, "[ ...(y) ] = 0", "")
+	expectParseError(t, "({ (y) } = 0)", "<stdin>: ERROR: Expected identifier but found \"(\"\n")
+	expectParseError(t, "({ y: (z) } = 0)", "")
+	expectParseError(t, "({ ...(y) } = 0)", "")
 
 	expectParseError(t, "[...x = y] = 0", "<stdin>: ERROR: Invalid assignment target\n")
 	expectParseError(t, "x() = 0", "<stdin>: ERROR: Invalid assignment target\n")
@@ -1202,6 +1275,20 @@ func TestObject(t *testing.T) {
 	expectParseError(t, "({get x() {}, set x(y) {}, set x(y) {}})", duplicateWarning)
 	expectParseError(t, "({get x() {}, set x(y) {}})", "")
 	expectParseError(t, "({set x(y) {}, get x() {}})", "")
+
+	// Check the string-to-int optimization
+	expectPrintedMangle(t, "x = { '0': y }", "x = { 0: y };\n")
+	expectPrintedMangle(t, "x = { '123': y }", "x = { 123: y };\n")
+	expectPrintedMangle(t, "x = { '-123': y }", "x = { \"-123\": y };\n")
+	expectPrintedMangle(t, "x = { '-0': y }", "x = { \"-0\": y };\n")
+	expectPrintedMangle(t, "x = { '01': y }", "x = { \"01\": y };\n")
+	expectPrintedMangle(t, "x = { '-01': y }", "x = { \"-01\": y };\n")
+	expectPrintedMangle(t, "x = { '0x1': y }", "x = { \"0x1\": y };\n")
+	expectPrintedMangle(t, "x = { '-0x1': y }", "x = { \"-0x1\": y };\n")
+	expectPrintedMangle(t, "x = { '2147483647': y }", "x = { 2147483647: y };\n")
+	expectPrintedMangle(t, "x = { '2147483648': y }", "x = { \"2147483648\": y };\n")
+	expectPrintedMangle(t, "x = { '-2147483648': y }", "x = { \"-2147483648\": y };\n")
+	expectPrintedMangle(t, "x = { '-2147483649': y }", "x = { \"-2147483649\": y };\n")
 }
 
 func TestComputedProperty(t *testing.T) {
@@ -1544,6 +1631,20 @@ func TestClass(t *testing.T) {
 		"class Foo {\n  constructor() {\n  }\n  [\"constructor\"]() {\n  }\n}\n")
 	expectPrintedMangle(t, "class Foo { static constructor() {} static ['constructor']() {} }",
 		"class Foo {\n  static constructor() {\n  }\n  static constructor() {\n  }\n}\n")
+
+	// Check the string-to-int optimization
+	expectPrintedMangle(t, "class x { '0' = y }", "class x {\n  0 = y;\n}\n")
+	expectPrintedMangle(t, "class x { '123' = y }", "class x {\n  123 = y;\n}\n")
+	expectPrintedMangle(t, "class x { ['-123'] = y }", "class x {\n  \"-123\" = y;\n}\n")
+	expectPrintedMangle(t, "class x { '-0' = y }", "class x {\n  \"-0\" = y;\n}\n")
+	expectPrintedMangle(t, "class x { '01' = y }", "class x {\n  \"01\" = y;\n}\n")
+	expectPrintedMangle(t, "class x { '-01' = y }", "class x {\n  \"-01\" = y;\n}\n")
+	expectPrintedMangle(t, "class x { '0x1' = y }", "class x {\n  \"0x1\" = y;\n}\n")
+	expectPrintedMangle(t, "class x { '-0x1' = y }", "class x {\n  \"-0x1\" = y;\n}\n")
+	expectPrintedMangle(t, "class x { '2147483647' = y }", "class x {\n  2147483647 = y;\n}\n")
+	expectPrintedMangle(t, "class x { '2147483648' = y }", "class x {\n  \"2147483648\" = y;\n}\n")
+	expectPrintedMangle(t, "class x { ['-2147483648'] = y }", "class x {\n  \"-2147483648\" = y;\n}\n")
+	expectPrintedMangle(t, "class x { ['-2147483649'] = y }", "class x {\n  \"-2147483649\" = y;\n}\n")
 }
 
 func TestSuperCall(t *testing.T) {
@@ -1568,6 +1669,8 @@ func TestSuperCall(t *testing.T) {
 	expectPrinted(t, "class Foo extends Bar { constructor(x = () => super()) {} }",
 		"class Foo extends Bar {\n  constructor(x = () => super()) {\n  }\n}\n")
 
+	expectPrintedMangleTarget(t, 2015, "class A extends B { x; constructor() { super() } }",
+		"class A extends B {\n  constructor() {\n    super();\n    __publicField(this, \"x\");\n  }\n}\n")
 	expectPrintedMangleTarget(t, 2015, "class A extends B { x = 1; constructor() { super() } }",
 		"class A extends B {\n  constructor() {\n    super();\n    __publicField(this, \"x\", 1);\n  }\n}\n")
 	expectPrintedMangleTarget(t, 2015, "class A extends B { x = 1; constructor() { super(); c() } }",
@@ -1584,6 +1687,10 @@ func TestSuperCall(t *testing.T) {
 		"class A extends B {\n  constructor() {\n    super();\n    __publicField(this, \"x\", 1);\n    return c;\n  }\n}\n")
 	expectPrintedMangleTarget(t, 2015, "class A extends B { x = 1; constructor() { super(); throw c } }",
 		"class A extends B {\n  constructor() {\n    super();\n    __publicField(this, \"x\", 1);\n    throw c;\n  }\n}\n")
+	expectPrintedMangleTarget(t, 2015, "class A extends B { x = 1; constructor() { if (true) super(1); else super(2); } }",
+		"class A extends B {\n  constructor() {\n    super(1);\n    __publicField(this, \"x\", 1);\n  }\n}\n")
+	expectPrintedMangleTarget(t, 2015, "class A extends B { x = 1; constructor() { if (foo) super(1); else super(2); } }",
+		"class A extends B {\n  constructor() {\n    var __super = (...args) => {\n      super(...args);\n      __publicField(this, \"x\", 1);\n    };\n    foo ? __super(1) : __super(2);\n  }\n}\n")
 }
 
 func TestSuperProp(t *testing.T) {
@@ -1806,8 +1913,8 @@ func TestAsync(t *testing.T) {
 	expectPrinted(t, "new async function() { await 0 }", "new async function() {\n  await 0;\n}();\n")
 	expectPrinted(t, "new async function() { await 0 }.x", "new async function() {\n  await 0;\n}.x();\n")
 
-	friendlyAwaitError := "<stdin>: ERROR: \"await\" can only be used inside an \"async\" function\n" +
-		"<stdin>: NOTE: Consider adding the \"async\" keyword here:\n"
+	friendlyAwaitError := "<stdin>: ERROR: \"await\" can only be used inside an \"async\" function\n"
+	friendlyAwaitErrorWithNote := friendlyAwaitError + "<stdin>: NOTE: Consider adding the \"async\" keyword here:\n"
 
 	expectPrinted(t, "async", "async;\n")
 	expectPrinted(t, "async + 1", "async + 1;\n")
@@ -1830,7 +1937,7 @@ func TestAsync(t *testing.T) {
 	expectPrinted(t, "new (async().x)", "new (async()).x();\n")
 	expectParseError(t, "async x;", "<stdin>: ERROR: Expected \"=>\" but found \";\"\n")
 	expectParseError(t, "async (...x,) => {}", "<stdin>: ERROR: Unexpected \",\" after rest pattern\n")
-	expectParseError(t, "async => await 0", friendlyAwaitError)
+	expectParseError(t, "async => await 0", friendlyAwaitErrorWithNote)
 	expectParseError(t, "new async => {}", "<stdin>: ERROR: Expected \";\" but found \"=>\"\n")
 	expectParseError(t, "new async () => {}", "<stdin>: ERROR: Expected \";\" but found \"=>\"\n")
 
@@ -1869,8 +1976,10 @@ func TestAsync(t *testing.T) {
 	expectParseError(t, "async function foo() { class Foo { foo(x = await y) {} } }", friendlyAwaitError)
 	expectParseError(t, "async function foo() { (class { foo(x = await y) {} }) }", friendlyAwaitError)
 	expectParseError(t, "async function foo() { (x = await y) => {} }", "<stdin>: ERROR: Cannot use an \"await\" expression here:\n")
+	expectParseError(t, "async function foo(x = await y) {}", "<stdin>: ERROR: The keyword \"await\" cannot be used here:\n<stdin>: ERROR: Expected \")\" but found \"y\"\n")
+	expectParseError(t, "async function foo({ [await y]: x }) {}", "<stdin>: ERROR: The keyword \"await\" cannot be used here:\n<stdin>: ERROR: Expected \"]\" but found \"y\"\n")
 	expectPrinted(t, "async function foo() { (x = await y) }", "async function foo() {\n  x = await y;\n}\n")
-	expectParseError(t, "function foo() { (x = await y) }", friendlyAwaitError)
+	expectParseError(t, "function foo() { (x = await y) }", friendlyAwaitErrorWithNote)
 
 	// Newlines
 	expectPrinted(t, "(class { async \n foo() {} })", "(class {\n  async;\n  foo() {\n  }\n});\n")
@@ -1881,7 +1990,7 @@ func TestAsync(t *testing.T) {
 	// Top-level await
 	expectPrinted(t, "await foo;", "await foo;\n")
 	expectPrinted(t, "for await(foo of bar);", "for await (foo of bar)\n  ;\n")
-	expectParseError(t, "function foo() { await foo }", friendlyAwaitError)
+	expectParseError(t, "function foo() { await foo }", friendlyAwaitErrorWithNote)
 	expectParseError(t, "function foo() { for await(foo of bar); }", "<stdin>: ERROR: Cannot use \"await\" outside an async function\n")
 	expectPrinted(t, "function foo(x = await) {}", "function foo(x = await) {\n}\n")
 	expectParseError(t, "function foo(x = await y) {}", friendlyAwaitError)
@@ -1964,12 +2073,30 @@ func TestLabels(t *testing.T) {
 	expectPrinted(t, "x: ({ f() { x: 1; } }).f()", "x:\n  ({ f() {\n    x:\n      1;\n  } }).f();\n")
 	expectPrinted(t, "x: (function() { x: 1; })()", "x:\n  (function() {\n    x:\n      1;\n  })();\n")
 	expectParseError(t, "x: y: x: 1", "<stdin>: ERROR: Duplicate label \"x\"\n<stdin>: NOTE: The original label \"x\" is here:\n")
+
+	expectPrinted(t, "x: break x", "x:\n  break x;\n")
+	expectPrinted(t, "x: { break x; foo() }", "x: {\n  break x;\n  foo();\n}\n")
+	expectPrintedMangle(t, "x: break x", "")
+	expectPrintedMangle(t, "x: { break x; foo() }", "")
+	expectPrintedMangle(t, "y: while (foo()) x: { break x; foo() }", "y:\n  for (; foo(); )\n    ;\n")
+	expectPrintedMangle(t, "y: while (foo()) x: { break y; foo() }", "y:\n  for (; foo(); )\n    x:\n      break y;\n")
 }
 
 func TestArrow(t *testing.T) {
 	expectParseError(t, "({a: b, c() {}}) => {}", "<stdin>: ERROR: Invalid binding pattern\n")
 	expectParseError(t, "({a: b, get c() {}}) => {}", "<stdin>: ERROR: Invalid binding pattern\n")
 	expectParseError(t, "({a: b, set c(x) {}}) => {}", "<stdin>: ERROR: Invalid binding pattern\n")
+
+	expectParseError(t, "x = ([ (y) ]) => 0", "<stdin>: ERROR: Invalid binding pattern\n")
+	expectParseError(t, "x = ([ ...(y) ]) => 0", "<stdin>: ERROR: Invalid binding pattern\n")
+	expectParseError(t, "x = ({ (y) }) => 0", "<stdin>: ERROR: Expected identifier but found \"(\"\n")
+	expectParseError(t, "x = ({ y: (z) }) => 0", "<stdin>: ERROR: Invalid binding pattern\n")
+	expectParseError(t, "x = ({ ...(y) }) => 0", "<stdin>: ERROR: Invalid binding pattern\n")
+
+	expectPrinted(t, "x = ([ y = [ (z) ] ]) => 0", "x = ([y = [z]]) => 0;\n")
+	expectPrinted(t, "x = ([ y = [ ...(z) ] ]) => 0", "x = ([y = [...z]]) => 0;\n")
+	expectPrinted(t, "x = ({ y = { y: (z) } }) => 0", "x = ({ y = { y: z } }) => 0;\n")
+	expectPrinted(t, "x = ({ y = { ...(y) } }) => 0", "x = ({ y = { ...y } }) => 0;\n")
 
 	expectPrinted(t, "x => function() {}", "(x) => function() {\n};\n")
 	expectPrinted(t, "(x) => function() {}", "(x) => function() {\n};\n")
@@ -2698,7 +2825,7 @@ func TestWarningEqualsNewObject(t *testing.T) {
 
 func TestWarningEqualsNaN(t *testing.T) {
 	note := "NOTE: Floating-point equality is defined such that NaN is never equal to anything, so \"x === NaN\" always returns false. " +
-		"You need to use \"isNaN(x)\" instead to test for NaN.\n"
+		"You need to use \"Number.isNaN(x)\" instead to test for NaN.\n"
 
 	expectParseError(t, "x === NaN", "<stdin>: WARNING: Comparison with NaN using the \"===\" operator here is always false\n"+note)
 	expectParseError(t, "x !== NaN", "<stdin>: WARNING: Comparison with NaN using the \"!==\" operator here is always true\n"+note)
@@ -2854,34 +2981,48 @@ func TestMangleLoopJump(t *testing.T) {
 
 func TestMangleUndefined(t *testing.T) {
 	// These should be transformed
-	expectPrintedMangle(t, "console.log(undefined)", "console.log(void 0);\n")
-	expectPrintedMangle(t, "console.log(+undefined)", "console.log(NaN);\n")
-	expectPrintedMangle(t, "console.log(undefined + undefined)", "console.log(void 0 + void 0);\n")
-	expectPrintedMangle(t, "const x = undefined", "const x = void 0;\n")
-	expectPrintedMangle(t, "let x = undefined", "let x;\n")
-	expectPrintedMangle(t, "var x = undefined", "var x = void 0;\n")
-	expectPrintedMangle(t, "function foo(a) { if (!a) return undefined; a() }", "function foo(a) {\n  !a || a();\n}\n")
+	expectPrintedNormalAndMangle(t, "console.log(undefined)", "console.log(void 0);\n", "console.log(void 0);\n")
+	expectPrintedNormalAndMangle(t, "console.log(+undefined)", "console.log(NaN);\n", "console.log(NaN);\n")
+	expectPrintedNormalAndMangle(t, "console.log(undefined + undefined)", "console.log(void 0 + void 0);\n", "console.log(void 0 + void 0);\n")
+	expectPrintedNormalAndMangle(t, "const x = undefined", "const x = void 0;\n", "const x = void 0;\n")
+	expectPrintedNormalAndMangle(t, "let x = undefined", "let x = void 0;\n", "let x;\n")
+	expectPrintedNormalAndMangle(t, "var x = undefined", "var x = void 0;\n", "var x = void 0;\n")
+	expectPrintedNormalAndMangle(t, "function foo(a) { if (!a) return undefined; a() }", "function foo(a) {\n  if (!a)\n    return void 0;\n  a();\n}\n", "function foo(a) {\n  !a || a();\n}\n")
 
 	// These should not be transformed
-	expectPrintedMangle(t, "delete undefined", "delete undefined;\n")
-	expectPrintedMangle(t, "undefined--", "undefined--;\n")
-	expectPrintedMangle(t, "undefined++", "undefined++;\n")
-	expectPrintedMangle(t, "--undefined", "--undefined;\n")
-	expectPrintedMangle(t, "++undefined", "++undefined;\n")
-	expectPrintedMangle(t, "undefined = 1", "undefined = 1;\n")
-	expectPrintedMangle(t, "[undefined] = 1", "[undefined] = 1;\n")
-	expectPrintedMangle(t, "({x: undefined} = 1)", "({ x: undefined } = 1);\n")
-	expectPrintedMangle(t, "with (x) y(undefined); z(undefined)", "with (x)\n  y(undefined);\nz(void 0);\n")
-	expectPrintedMangle(t, "with (x) while (i) y(undefined); z(undefined)", "with (x)\n  for (; i; )\n    y(undefined);\nz(void 0);\n")
+	expectPrintedNormalAndMangle(t, "delete undefined", "delete undefined;\n", "delete undefined;\n")
+	expectPrintedNormalAndMangle(t, "undefined--", "undefined--;\n", "undefined--;\n")
+	expectPrintedNormalAndMangle(t, "undefined++", "undefined++;\n", "undefined++;\n")
+	expectPrintedNormalAndMangle(t, "--undefined", "--undefined;\n", "--undefined;\n")
+	expectPrintedNormalAndMangle(t, "++undefined", "++undefined;\n", "++undefined;\n")
+	expectPrintedNormalAndMangle(t, "undefined = 1", "undefined = 1;\n", "undefined = 1;\n")
+	expectPrintedNormalAndMangle(t, "[undefined] = 1", "[undefined] = 1;\n", "[undefined] = 1;\n")
+	expectPrintedNormalAndMangle(t, "({x: undefined} = 1)", "({ x: undefined } = 1);\n", "({ x: undefined } = 1);\n")
+	expectPrintedNormalAndMangle(t, "with (x) y(undefined); z(undefined)", "with (x)\n  y(undefined);\nz(void 0);\n", "with (x)\n  y(undefined);\nz(void 0);\n")
+	expectPrintedNormalAndMangle(t, "with (x) while (i) y(undefined); z(undefined)", "with (x)\n  while (i)\n    y(undefined);\nz(void 0);\n", "with (x)\n  for (; i; )\n    y(undefined);\nz(void 0);\n")
 }
 
 func TestMangleIndex(t *testing.T) {
-	expectPrintedMangle(t, "x['y']", "x.y;\n")
-	expectPrintedMangle(t, "x['y z']", "x[\"y z\"];\n")
-	expectPrintedMangle(t, "x?.['y']", "x?.y;\n")
-	expectPrintedMangle(t, "x?.['y z']", "x?.[\"y z\"];\n")
-	expectPrintedMangle(t, "x?.['y']()", "x?.y();\n")
-	expectPrintedMangle(t, "x?.['y z']()", "x?.[\"y z\"]();\n")
+	expectPrintedNormalAndMangle(t, "x['y']", "x[\"y\"];\n", "x.y;\n")
+	expectPrintedNormalAndMangle(t, "x['y z']", "x[\"y z\"];\n", "x[\"y z\"];\n")
+	expectPrintedNormalAndMangle(t, "x?.['y']", "x?.[\"y\"];\n", "x?.y;\n")
+	expectPrintedNormalAndMangle(t, "x?.['y z']", "x?.[\"y z\"];\n", "x?.[\"y z\"];\n")
+	expectPrintedNormalAndMangle(t, "x?.['y']()", "x?.[\"y\"]();\n", "x?.y();\n")
+	expectPrintedNormalAndMangle(t, "x?.['y z']()", "x?.[\"y z\"]();\n", "x?.[\"y z\"]();\n")
+
+	// Check the string-to-int optimization
+	expectPrintedNormalAndMangle(t, "x['0']", "x[\"0\"];\n", "x[0];\n")
+	expectPrintedNormalAndMangle(t, "x['123']", "x[\"123\"];\n", "x[123];\n")
+	expectPrintedNormalAndMangle(t, "x['-123']", "x[\"-123\"];\n", "x[-123];\n")
+	expectPrintedNormalAndMangle(t, "x['-0']", "x[\"-0\"];\n", "x[\"-0\"];\n")
+	expectPrintedNormalAndMangle(t, "x['01']", "x[\"01\"];\n", "x[\"01\"];\n")
+	expectPrintedNormalAndMangle(t, "x['-01']", "x[\"-01\"];\n", "x[\"-01\"];\n")
+	expectPrintedNormalAndMangle(t, "x['0x1']", "x[\"0x1\"];\n", "x[\"0x1\"];\n")
+	expectPrintedNormalAndMangle(t, "x['-0x1']", "x[\"-0x1\"];\n", "x[\"-0x1\"];\n")
+	expectPrintedNormalAndMangle(t, "x['2147483647']", "x[\"2147483647\"];\n", "x[2147483647];\n")
+	expectPrintedNormalAndMangle(t, "x['2147483648']", "x[\"2147483648\"];\n", "x[\"2147483648\"];\n")
+	expectPrintedNormalAndMangle(t, "x['-2147483648']", "x[\"-2147483648\"];\n", "x[-2147483648];\n")
+	expectPrintedNormalAndMangle(t, "x['-2147483649']", "x[\"-2147483649\"];\n", "x[\"-2147483649\"];\n")
 }
 
 func TestMangleBlock(t *testing.T) {
@@ -2902,15 +3043,15 @@ func TestMangleSwitch(t *testing.T) {
 }
 
 func TestMangleAddEmptyString(t *testing.T) {
-	expectPrintedMangle(t, "a = '' + 0", "a = \"\" + 0;\n")
-	expectPrintedMangle(t, "a = 0 + ''", "a = 0 + \"\";\n")
-	expectPrintedMangle(t, "a = '' + b", "a = \"\" + b;\n")
-	expectPrintedMangle(t, "a = b + ''", "a = b + \"\";\n")
+	expectPrintedNormalAndMangle(t, "a = '' + 0", "a = \"\" + 0;\n", "a = \"\" + 0;\n")
+	expectPrintedNormalAndMangle(t, "a = 0 + ''", "a = 0 + \"\";\n", "a = 0 + \"\";\n")
+	expectPrintedNormalAndMangle(t, "a = '' + b", "a = \"\" + b;\n", "a = \"\" + b;\n")
+	expectPrintedNormalAndMangle(t, "a = b + ''", "a = b + \"\";\n", "a = b + \"\";\n")
 
-	expectPrintedMangle(t, "a = '' + `${b}`", "a = `${b}`;\n")
-	expectPrintedMangle(t, "a = `${b}` + ''", "a = `${b}`;\n")
-	expectPrintedMangle(t, "a = '' + typeof b", "a = typeof b;\n")
-	expectPrintedMangle(t, "a = typeof b + ''", "a = typeof b;\n")
+	expectPrintedNormalAndMangle(t, "a = '' + `${b}`", "a = `${b}`;\n", "a = `${b}`;\n")
+	expectPrintedNormalAndMangle(t, "a = `${b}` + ''", "a = `${b}`;\n", "a = `${b}`;\n")
+	expectPrintedNormalAndMangle(t, "a = '' + typeof b", "a = typeof b;\n", "a = typeof b;\n")
+	expectPrintedNormalAndMangle(t, "a = typeof b + ''", "a = typeof b;\n", "a = typeof b;\n")
 }
 
 func TestMangleStringLength(t *testing.T) {
@@ -2930,97 +3071,97 @@ func TestMangleStringLength(t *testing.T) {
 
 func TestMangleNot(t *testing.T) {
 	// These can be mangled
-	expectPrintedMangle(t, "a = !(b == c)", "a = b != c;\n")
-	expectPrintedMangle(t, "a = !(b != c)", "a = b == c;\n")
-	expectPrintedMangle(t, "a = !(b === c)", "a = b !== c;\n")
-	expectPrintedMangle(t, "a = !(b !== c)", "a = b === c;\n")
-	expectPrintedMangle(t, "if (!(a, b)) return c", "if (a, !b)\n  return c;\n")
+	expectPrintedNormalAndMangle(t, "a = !(b == c)", "a = !(b == c);\n", "a = b != c;\n")
+	expectPrintedNormalAndMangle(t, "a = !(b != c)", "a = !(b != c);\n", "a = b == c;\n")
+	expectPrintedNormalAndMangle(t, "a = !(b === c)", "a = !(b === c);\n", "a = b !== c;\n")
+	expectPrintedNormalAndMangle(t, "a = !(b !== c)", "a = !(b !== c);\n", "a = b === c;\n")
+	expectPrintedNormalAndMangle(t, "if (!(a, b)) return c", "if (!(a, b))\n  return c;\n", "if (a, !b)\n  return c;\n")
 
 	// These can't be mangled due to NaN and other special cases
-	expectPrintedMangle(t, "a = !(b < c)", "a = !(b < c);\n")
-	expectPrintedMangle(t, "a = !(b > c)", "a = !(b > c);\n")
-	expectPrintedMangle(t, "a = !(b <= c)", "a = !(b <= c);\n")
-	expectPrintedMangle(t, "a = !(b >= c)", "a = !(b >= c);\n")
+	expectPrintedNormalAndMangle(t, "a = !(b < c)", "a = !(b < c);\n", "a = !(b < c);\n")
+	expectPrintedNormalAndMangle(t, "a = !(b > c)", "a = !(b > c);\n", "a = !(b > c);\n")
+	expectPrintedNormalAndMangle(t, "a = !(b <= c)", "a = !(b <= c);\n", "a = !(b <= c);\n")
+	expectPrintedNormalAndMangle(t, "a = !(b >= c)", "a = !(b >= c);\n", "a = !(b >= c);\n")
 }
 
 func TestMangleDoubleNot(t *testing.T) {
-	expectPrintedMangle(t, "a = !!b", "a = !!b;\n")
+	expectPrintedNormalAndMangle(t, "a = !!b", "a = !!b;\n", "a = !!b;\n")
 
-	expectPrintedMangle(t, "a = !!!b", "a = !b;\n")
-	expectPrintedMangle(t, "a = !!-b", "a = !!-b;\n")
-	expectPrintedMangle(t, "a = !!void b", "a = !!void b;\n")
-	expectPrintedMangle(t, "a = !!delete b", "a = delete b;\n")
+	expectPrintedNormalAndMangle(t, "a = !!!b", "a = !!!b;\n", "a = !b;\n")
+	expectPrintedNormalAndMangle(t, "a = !!-b", "a = !!-b;\n", "a = !!-b;\n")
+	expectPrintedNormalAndMangle(t, "a = !!void b", "a = !!void b;\n", "a = !!void b;\n")
+	expectPrintedNormalAndMangle(t, "a = !!delete b", "a = !!delete b;\n", "a = delete b;\n")
 
-	expectPrintedMangle(t, "a = !!(b + c)", "a = !!(b + c);\n")
-	expectPrintedMangle(t, "a = !!(b == c)", "a = b == c;\n")
-	expectPrintedMangle(t, "a = !!(b != c)", "a = b != c;\n")
-	expectPrintedMangle(t, "a = !!(b === c)", "a = b === c;\n")
-	expectPrintedMangle(t, "a = !!(b !== c)", "a = b !== c;\n")
-	expectPrintedMangle(t, "a = !!(b < c)", "a = b < c;\n")
-	expectPrintedMangle(t, "a = !!(b > c)", "a = b > c;\n")
-	expectPrintedMangle(t, "a = !!(b <= c)", "a = b <= c;\n")
-	expectPrintedMangle(t, "a = !!(b >= c)", "a = b >= c;\n")
-	expectPrintedMangle(t, "a = !!(b in c)", "a = b in c;\n")
-	expectPrintedMangle(t, "a = !!(b instanceof c)", "a = b instanceof c;\n")
+	expectPrintedNormalAndMangle(t, "a = !!(b + c)", "a = !!(b + c);\n", "a = !!(b + c);\n")
+	expectPrintedNormalAndMangle(t, "a = !!(b == c)", "a = !!(b == c);\n", "a = b == c;\n")
+	expectPrintedNormalAndMangle(t, "a = !!(b != c)", "a = !!(b != c);\n", "a = b != c;\n")
+	expectPrintedNormalAndMangle(t, "a = !!(b === c)", "a = !!(b === c);\n", "a = b === c;\n")
+	expectPrintedNormalAndMangle(t, "a = !!(b !== c)", "a = !!(b !== c);\n", "a = b !== c;\n")
+	expectPrintedNormalAndMangle(t, "a = !!(b < c)", "a = !!(b < c);\n", "a = b < c;\n")
+	expectPrintedNormalAndMangle(t, "a = !!(b > c)", "a = !!(b > c);\n", "a = b > c;\n")
+	expectPrintedNormalAndMangle(t, "a = !!(b <= c)", "a = !!(b <= c);\n", "a = b <= c;\n")
+	expectPrintedNormalAndMangle(t, "a = !!(b >= c)", "a = !!(b >= c);\n", "a = b >= c;\n")
+	expectPrintedNormalAndMangle(t, "a = !!(b in c)", "a = !!(b in c);\n", "a = b in c;\n")
+	expectPrintedNormalAndMangle(t, "a = !!(b instanceof c)", "a = !!(b instanceof c);\n", "a = b instanceof c;\n")
 
-	expectPrintedMangle(t, "a = !!(b && c)", "a = !!(b && c);\n")
-	expectPrintedMangle(t, "a = !!(b || c)", "a = !!(b || c);\n")
-	expectPrintedMangle(t, "a = !!(b ?? c)", "a = !!(b ?? c);\n")
+	expectPrintedNormalAndMangle(t, "a = !!(b && c)", "a = !!(b && c);\n", "a = !!(b && c);\n")
+	expectPrintedNormalAndMangle(t, "a = !!(b || c)", "a = !!(b || c);\n", "a = !!(b || c);\n")
+	expectPrintedNormalAndMangle(t, "a = !!(b ?? c)", "a = !!(b ?? c);\n", "a = !!(b ?? c);\n")
 
-	expectPrintedMangle(t, "a = !!(!b && c)", "a = !!(!b && c);\n")
-	expectPrintedMangle(t, "a = !!(!b || c)", "a = !!(!b || c);\n")
-	expectPrintedMangle(t, "a = !!(!b ?? c)", "a = !b;\n")
+	expectPrintedNormalAndMangle(t, "a = !!(!b && c)", "a = !!(!b && c);\n", "a = !!(!b && c);\n")
+	expectPrintedNormalAndMangle(t, "a = !!(!b || c)", "a = !!(!b || c);\n", "a = !!(!b || c);\n")
+	expectPrintedNormalAndMangle(t, "a = !!(!b ?? c)", "a = !!!b;\n", "a = !b;\n")
 
-	expectPrintedMangle(t, "a = !!(b && !c)", "a = !!(b && !c);\n")
-	expectPrintedMangle(t, "a = !!(b || !c)", "a = !!(b || !c);\n")
-	expectPrintedMangle(t, "a = !!(b ?? !c)", "a = !!(b ?? !c);\n")
+	expectPrintedNormalAndMangle(t, "a = !!(b && !c)", "a = !!(b && !c);\n", "a = !!(b && !c);\n")
+	expectPrintedNormalAndMangle(t, "a = !!(b || !c)", "a = !!(b || !c);\n", "a = !!(b || !c);\n")
+	expectPrintedNormalAndMangle(t, "a = !!(b ?? !c)", "a = !!(b ?? !c);\n", "a = !!(b ?? !c);\n")
 
-	expectPrintedMangle(t, "a = !!(!b && !c)", "a = !b && !c;\n")
-	expectPrintedMangle(t, "a = !!(!b || !c)", "a = !b || !c;\n")
-	expectPrintedMangle(t, "a = !!(!b ?? !c)", "a = !b;\n")
+	expectPrintedNormalAndMangle(t, "a = !!(!b && !c)", "a = !!(!b && !c);\n", "a = !b && !c;\n")
+	expectPrintedNormalAndMangle(t, "a = !!(!b || !c)", "a = !!(!b || !c);\n", "a = !b || !c;\n")
+	expectPrintedNormalAndMangle(t, "a = !!(!b ?? !c)", "a = !!!b;\n", "a = !b;\n")
 
-	expectPrintedMangle(t, "a = !!(b, c)", "a = (b, !!c);\n")
+	expectPrintedNormalAndMangle(t, "a = !!(b, c)", "a = !!(b, c);\n", "a = (b, !!c);\n")
 }
 
 func TestMangleIf(t *testing.T) {
-	expectPrintedMangle(t, "1 ? a() : b()", "a();\n")
-	expectPrintedMangle(t, "0 ? a() : b()", "b();\n")
+	expectPrintedNormalAndMangle(t, "1 ? a() : b()", "1 ? a() : b();\n", "a();\n")
+	expectPrintedNormalAndMangle(t, "0 ? a() : b()", "0 ? a() : b();\n", "b();\n")
 
-	expectPrintedMangle(t, "a ? a : b", "a || b;\n")
-	expectPrintedMangle(t, "a ? b : a", "a && b;\n")
-	expectPrintedMangle(t, "a.x ? a.x : b", "a.x ? a.x : b;\n")
-	expectPrintedMangle(t, "a.x ? b : a.x", "a.x ? b : a.x;\n")
+	expectPrintedNormalAndMangle(t, "a ? a : b", "a ? a : b;\n", "a || b;\n")
+	expectPrintedNormalAndMangle(t, "a ? b : a", "a ? b : a;\n", "a && b;\n")
+	expectPrintedNormalAndMangle(t, "a.x ? a.x : b", "a.x ? a.x : b;\n", "a.x ? a.x : b;\n")
+	expectPrintedNormalAndMangle(t, "a.x ? b : a.x", "a.x ? b : a.x;\n", "a.x ? b : a.x;\n")
 
-	expectPrintedMangle(t, "a ? b() : c()", "a ? b() : c();\n")
-	expectPrintedMangle(t, "!a ? b() : c()", "a ? c() : b();\n")
-	expectPrintedMangle(t, "!!a ? b() : c()", "a ? b() : c();\n")
-	expectPrintedMangle(t, "!!!a ? b() : c()", "a ? c() : b();\n")
+	expectPrintedNormalAndMangle(t, "a ? b() : c()", "a ? b() : c();\n", "a ? b() : c();\n")
+	expectPrintedNormalAndMangle(t, "!a ? b() : c()", "!a ? b() : c();\n", "a ? c() : b();\n")
+	expectPrintedNormalAndMangle(t, "!!a ? b() : c()", "!!a ? b() : c();\n", "a ? b() : c();\n")
+	expectPrintedNormalAndMangle(t, "!!!a ? b() : c()", "!!!a ? b() : c();\n", "a ? c() : b();\n")
 
-	expectPrintedMangle(t, "if (1) a(); else b()", "a();\n")
-	expectPrintedMangle(t, "if (0) a(); else b()", "b();\n")
-	expectPrintedMangle(t, "if (a) b(); else c()", "a ? b() : c();\n")
-	expectPrintedMangle(t, "if (!a) b(); else c()", "a ? c() : b();\n")
-	expectPrintedMangle(t, "if (!!a) b(); else c()", "a ? b() : c();\n")
-	expectPrintedMangle(t, "if (!!!a) b(); else c()", "a ? c() : b();\n")
+	expectPrintedNormalAndMangle(t, "if (1) a(); else b()", "if (1)\n  a();\nelse\n  b();\n", "a();\n")
+	expectPrintedNormalAndMangle(t, "if (0) a(); else b()", "if (0)\n  a();\nelse\n  b();\n", "b();\n")
+	expectPrintedNormalAndMangle(t, "if (a) b(); else c()", "if (a)\n  b();\nelse\n  c();\n", "a ? b() : c();\n")
+	expectPrintedNormalAndMangle(t, "if (!a) b(); else c()", "if (!a)\n  b();\nelse\n  c();\n", "a ? c() : b();\n")
+	expectPrintedNormalAndMangle(t, "if (!!a) b(); else c()", "if (!!a)\n  b();\nelse\n  c();\n", "a ? b() : c();\n")
+	expectPrintedNormalAndMangle(t, "if (!!!a) b(); else c()", "if (!!!a)\n  b();\nelse\n  c();\n", "a ? c() : b();\n")
 
-	expectPrintedMangle(t, "if (1) a()", "a();\n")
-	expectPrintedMangle(t, "if (0) a()", "")
-	expectPrintedMangle(t, "if (a) b()", "a && b();\n")
-	expectPrintedMangle(t, "if (!a) b()", "a || b();\n")
-	expectPrintedMangle(t, "if (!!a) b()", "a && b();\n")
-	expectPrintedMangle(t, "if (!!!a) b()", "a || b();\n")
+	expectPrintedNormalAndMangle(t, "if (1) a()", "if (1)\n  a();\n", "a();\n")
+	expectPrintedNormalAndMangle(t, "if (0) a()", "if (0)\n  a();\n", "")
+	expectPrintedNormalAndMangle(t, "if (a) b()", "if (a)\n  b();\n", "a && b();\n")
+	expectPrintedNormalAndMangle(t, "if (!a) b()", "if (!a)\n  b();\n", "a || b();\n")
+	expectPrintedNormalAndMangle(t, "if (!!a) b()", "if (!!a)\n  b();\n", "a && b();\n")
+	expectPrintedNormalAndMangle(t, "if (!!!a) b()", "if (!!!a)\n  b();\n", "a || b();\n")
 
-	expectPrintedMangle(t, "if (1) {} else a()", "")
-	expectPrintedMangle(t, "if (0) {} else a()", "a();\n")
-	expectPrintedMangle(t, "if (a) {} else b()", "a || b();\n")
-	expectPrintedMangle(t, "if (!a) {} else b()", "a && b();\n")
-	expectPrintedMangle(t, "if (!!a) {} else b()", "a || b();\n")
-	expectPrintedMangle(t, "if (!!!a) {} else b()", "a && b();\n")
+	expectPrintedNormalAndMangle(t, "if (1) {} else a()", "if (1) {\n} else\n  a();\n", "")
+	expectPrintedNormalAndMangle(t, "if (0) {} else a()", "if (0) {\n} else\n  a();\n", "a();\n")
+	expectPrintedNormalAndMangle(t, "if (a) {} else b()", "if (a) {\n} else\n  b();\n", "a || b();\n")
+	expectPrintedNormalAndMangle(t, "if (!a) {} else b()", "if (!a) {\n} else\n  b();\n", "a && b();\n")
+	expectPrintedNormalAndMangle(t, "if (!!a) {} else b()", "if (!!a) {\n} else\n  b();\n", "a || b();\n")
+	expectPrintedNormalAndMangle(t, "if (!!!a) {} else b()", "if (!!!a) {\n} else\n  b();\n", "a && b();\n")
 
-	expectPrintedMangle(t, "if (a) {} else throw b", "if (!a)\n  throw b;\n")
-	expectPrintedMangle(t, "if (!a) {} else throw b", "if (a)\n  throw b;\n")
-	expectPrintedMangle(t, "a(); if (b) throw c", "if (a(), b)\n  throw c;\n")
-	expectPrintedMangle(t, "if (a) if (b) throw c", "if (a && b)\n  throw c;\n")
+	expectPrintedNormalAndMangle(t, "if (a) {} else throw b", "if (a) {\n} else\n  throw b;\n", "if (!a)\n  throw b;\n")
+	expectPrintedNormalAndMangle(t, "if (!a) {} else throw b", "if (!a) {\n} else\n  throw b;\n", "if (a)\n  throw b;\n")
+	expectPrintedNormalAndMangle(t, "a(); if (b) throw c", "a();\nif (b)\n  throw c;\n", "if (a(), b)\n  throw c;\n")
+	expectPrintedNormalAndMangle(t, "if (a) if (b) throw c", "if (a) {\n  if (b)\n    throw c;\n}\n", "if (a && b)\n  throw c;\n")
 
 	expectPrintedMangle(t, "if (true) { let a = b; if (c) throw d }",
 		"{\n  let a = b;\n  if (c)\n    throw d;\n}\n")
@@ -3037,119 +3178,119 @@ func TestMangleIf(t *testing.T) {
 	expectPrintedMangle(t, "if (a) { if (b) throw c; else if (d) throw e; else if (f) throw g }",
 		"if (a) {\n  if (b)\n    throw c;\n  if (d)\n    throw e;\n  if (f)\n    throw g;\n}\n")
 
-	expectPrintedMangle(t, "a = b ? true : false", "a = !!b;\n")
-	expectPrintedMangle(t, "a = b ? false : true", "a = !b;\n")
-	expectPrintedMangle(t, "a = !b ? true : false", "a = !b;\n")
-	expectPrintedMangle(t, "a = !b ? false : true", "a = !!b;\n")
+	expectPrintedNormalAndMangle(t, "a = b ? true : false", "a = b ? true : false;\n", "a = !!b;\n")
+	expectPrintedNormalAndMangle(t, "a = b ? false : true", "a = b ? false : true;\n", "a = !b;\n")
+	expectPrintedNormalAndMangle(t, "a = !b ? true : false", "a = !b ? true : false;\n", "a = !b;\n")
+	expectPrintedNormalAndMangle(t, "a = !b ? false : true", "a = !b ? false : true;\n", "a = !!b;\n")
 
-	expectPrintedMangle(t, "a = b == c ? true : false", "a = b == c;\n")
-	expectPrintedMangle(t, "a = b != c ? true : false", "a = b != c;\n")
-	expectPrintedMangle(t, "a = b === c ? true : false", "a = b === c;\n")
-	expectPrintedMangle(t, "a = b !== c ? true : false", "a = b !== c;\n")
+	expectPrintedNormalAndMangle(t, "a = b == c ? true : false", "a = b == c ? true : false;\n", "a = b == c;\n")
+	expectPrintedNormalAndMangle(t, "a = b != c ? true : false", "a = b != c ? true : false;\n", "a = b != c;\n")
+	expectPrintedNormalAndMangle(t, "a = b === c ? true : false", "a = b === c ? true : false;\n", "a = b === c;\n")
+	expectPrintedNormalAndMangle(t, "a = b !== c ? true : false", "a = b !== c ? true : false;\n", "a = b !== c;\n")
 
-	expectPrintedMangle(t, "a ? b(c) : b(d)", "a ? b(c) : b(d);\n")
-	expectPrintedMangle(t, "let a; a ? b(c) : b(d)", "let a;\na ? b(c) : b(d);\n")
-	expectPrintedMangle(t, "let a, b; a ? b(c) : b(d)", "let a, b;\nb(a ? c : d);\n")
-	expectPrintedMangle(t, "let a, b; a ? b(c, 0) : b(d)", "let a, b;\na ? b(c, 0) : b(d);\n")
-	expectPrintedMangle(t, "let a, b; a ? b(c) : b(d, 0)", "let a, b;\na ? b(c) : b(d, 0);\n")
-	expectPrintedMangle(t, "let a, b; a ? b(c, 0) : b(d, 1)", "let a, b;\na ? b(c, 0) : b(d, 1);\n")
-	expectPrintedMangle(t, "let a, b; a ? b(c, 0) : b(d, 0)", "let a, b;\nb(a ? c : d, 0);\n")
-	expectPrintedMangle(t, "let a, b; a ? b(...c) : b(d)", "let a, b;\na ? b(...c) : b(d);\n")
-	expectPrintedMangle(t, "let a, b; a ? b(c) : b(...d)", "let a, b;\na ? b(c) : b(...d);\n")
-	expectPrintedMangle(t, "let a, b; a ? b(...c) : b(...d)", "let a, b;\nb(...a ? c : d);\n")
-	expectPrintedMangle(t, "let a, b; a ? b(a) : b(c)", "let a, b;\nb(a || c);\n")
-	expectPrintedMangle(t, "let a, b; a ? b(c) : b(a)", "let a, b;\nb(a && c);\n")
-	expectPrintedMangle(t, "let a, b; a ? b(...a) : b(...c)", "let a, b;\nb(...a || c);\n")
-	expectPrintedMangle(t, "let a, b; a ? b(...c) : b(...a)", "let a, b;\nb(...a && c);\n")
+	expectPrintedNormalAndMangle(t, "a ? b(c) : b(d)", "a ? b(c) : b(d);\n", "a ? b(c) : b(d);\n")
+	expectPrintedNormalAndMangle(t, "let a; a ? b(c) : b(d)", "let a;\na ? b(c) : b(d);\n", "let a;\na ? b(c) : b(d);\n")
+	expectPrintedNormalAndMangle(t, "let a, b; a ? b(c) : b(d)", "let a, b;\na ? b(c) : b(d);\n", "let a, b;\nb(a ? c : d);\n")
+	expectPrintedNormalAndMangle(t, "let a, b; a ? b(c, 0) : b(d)", "let a, b;\na ? b(c, 0) : b(d);\n", "let a, b;\na ? b(c, 0) : b(d);\n")
+	expectPrintedNormalAndMangle(t, "let a, b; a ? b(c) : b(d, 0)", "let a, b;\na ? b(c) : b(d, 0);\n", "let a, b;\na ? b(c) : b(d, 0);\n")
+	expectPrintedNormalAndMangle(t, "let a, b; a ? b(c, 0) : b(d, 1)", "let a, b;\na ? b(c, 0) : b(d, 1);\n", "let a, b;\na ? b(c, 0) : b(d, 1);\n")
+	expectPrintedNormalAndMangle(t, "let a, b; a ? b(c, 0) : b(d, 0)", "let a, b;\na ? b(c, 0) : b(d, 0);\n", "let a, b;\nb(a ? c : d, 0);\n")
+	expectPrintedNormalAndMangle(t, "let a, b; a ? b(...c) : b(d)", "let a, b;\na ? b(...c) : b(d);\n", "let a, b;\na ? b(...c) : b(d);\n")
+	expectPrintedNormalAndMangle(t, "let a, b; a ? b(c) : b(...d)", "let a, b;\na ? b(c) : b(...d);\n", "let a, b;\na ? b(c) : b(...d);\n")
+	expectPrintedNormalAndMangle(t, "let a, b; a ? b(...c) : b(...d)", "let a, b;\na ? b(...c) : b(...d);\n", "let a, b;\nb(...a ? c : d);\n")
+	expectPrintedNormalAndMangle(t, "let a, b; a ? b(a) : b(c)", "let a, b;\na ? b(a) : b(c);\n", "let a, b;\nb(a || c);\n")
+	expectPrintedNormalAndMangle(t, "let a, b; a ? b(c) : b(a)", "let a, b;\na ? b(c) : b(a);\n", "let a, b;\nb(a && c);\n")
+	expectPrintedNormalAndMangle(t, "let a, b; a ? b(...a) : b(...c)", "let a, b;\na ? b(...a) : b(...c);\n", "let a, b;\nb(...a || c);\n")
+	expectPrintedNormalAndMangle(t, "let a, b; a ? b(...c) : b(...a)", "let a, b;\na ? b(...c) : b(...a);\n", "let a, b;\nb(...a && c);\n")
 
 	// Note: "a.x" may change "b" and "b.y" may change "a" in the examples
 	// below, so the presence of these expressions must prevent reordering
-	expectPrintedMangle(t, "let a; a.x ? b(c) : b(d)", "let a;\na.x ? b(c) : b(d);\n")
-	expectPrintedMangle(t, "let a, b; a.x ? b(c) : b(d)", "let a, b;\na.x ? b(c) : b(d);\n")
-	expectPrintedMangle(t, "let a, b; a ? b.y(c) : b.y(d)", "let a, b;\na ? b.y(c) : b.y(d);\n")
-	expectPrintedMangle(t, "let a, b; a.x ? b.y(c) : b.y(d)", "let a, b;\na.x ? b.y(c) : b.y(d);\n")
+	expectPrintedNormalAndMangle(t, "let a; a.x ? b(c) : b(d)", "let a;\na.x ? b(c) : b(d);\n", "let a;\na.x ? b(c) : b(d);\n")
+	expectPrintedNormalAndMangle(t, "let a, b; a.x ? b(c) : b(d)", "let a, b;\na.x ? b(c) : b(d);\n", "let a, b;\na.x ? b(c) : b(d);\n")
+	expectPrintedNormalAndMangle(t, "let a, b; a ? b.y(c) : b.y(d)", "let a, b;\na ? b.y(c) : b.y(d);\n", "let a, b;\na ? b.y(c) : b.y(d);\n")
+	expectPrintedNormalAndMangle(t, "let a, b; a.x ? b.y(c) : b.y(d)", "let a, b;\na.x ? b.y(c) : b.y(d);\n", "let a, b;\na.x ? b.y(c) : b.y(d);\n")
 
-	expectPrintedMangle(t, "a ? b : c ? b : d", "a || c ? b : d;\n")
-	expectPrintedMangle(t, "a ? b ? c : d : d", "a && b ? c : d;\n")
+	expectPrintedNormalAndMangle(t, "a ? b : c ? b : d", "a ? b : c ? b : d;\n", "a || c ? b : d;\n")
+	expectPrintedNormalAndMangle(t, "a ? b ? c : d : d", "a ? b ? c : d : d;\n", "a && b ? c : d;\n")
 
-	expectPrintedMangle(t, "a ? c : (b, c)", "a || b, c;\n")
-	expectPrintedMangle(t, "a ? (b, c) : c", "a && b, c;\n")
-	expectPrintedMangle(t, "a ? c : (b, d)", "a ? c : (b, d);\n")
-	expectPrintedMangle(t, "a ? (b, c) : d", "a ? (b, c) : d;\n")
+	expectPrintedNormalAndMangle(t, "a ? c : (b, c)", "a ? c : (b, c);\n", "a || b, c;\n")
+	expectPrintedNormalAndMangle(t, "a ? (b, c) : c", "a ? (b, c) : c;\n", "a && b, c;\n")
+	expectPrintedNormalAndMangle(t, "a ? c : (b, d)", "a ? c : (b, d);\n", "a ? c : (b, d);\n")
+	expectPrintedNormalAndMangle(t, "a ? (b, c) : d", "a ? (b, c) : d;\n", "a ? (b, c) : d;\n")
 
-	expectPrintedMangle(t, "a ? b || c : c", "a && b || c;\n")
-	expectPrintedMangle(t, "a ? b || c : d", "a ? b || c : d;\n")
-	expectPrintedMangle(t, "a ? b && c : c", "a ? b && c : c;\n")
+	expectPrintedNormalAndMangle(t, "a ? b || c : c", "a ? b || c : c;\n", "a && b || c;\n")
+	expectPrintedNormalAndMangle(t, "a ? b || c : d", "a ? b || c : d;\n", "a ? b || c : d;\n")
+	expectPrintedNormalAndMangle(t, "a ? b && c : c", "a ? b && c : c;\n", "a ? b && c : c;\n")
 
-	expectPrintedMangle(t, "a ? c : b && c", "(a || b) && c;\n")
-	expectPrintedMangle(t, "a ? c : b && d", "a ? c : b && d;\n")
-	expectPrintedMangle(t, "a ? c : b || c", "a ? c : b || c;\n")
+	expectPrintedNormalAndMangle(t, "a ? c : b && c", "a ? c : b && c;\n", "(a || b) && c;\n")
+	expectPrintedNormalAndMangle(t, "a ? c : b && d", "a ? c : b && d;\n", "a ? c : b && d;\n")
+	expectPrintedNormalAndMangle(t, "a ? c : b || c", "a ? c : b || c;\n", "a ? c : b || c;\n")
 
-	expectPrintedMangle(t, "a = b == null ? c : b", "a = b == null ? c : b;\n")
-	expectPrintedMangle(t, "a = b != null ? b : c", "a = b != null ? b : c;\n")
+	expectPrintedNormalAndMangle(t, "a = b == null ? c : b", "a = b == null ? c : b;\n", "a = b == null ? c : b;\n")
+	expectPrintedNormalAndMangle(t, "a = b != null ? b : c", "a = b != null ? b : c;\n", "a = b != null ? b : c;\n")
 
-	expectPrintedMangle(t, "let b; a = b == null ? c : b", "let b;\na = b ?? c;\n")
-	expectPrintedMangle(t, "let b; a = b != null ? b : c", "let b;\na = b ?? c;\n")
-	expectPrintedMangle(t, "let b; a = b == null ? b : c", "let b;\na = b == null ? b : c;\n")
-	expectPrintedMangle(t, "let b; a = b != null ? c : b", "let b;\na = b != null ? c : b;\n")
+	expectPrintedNormalAndMangle(t, "let b; a = b == null ? c : b", "let b;\na = b == null ? c : b;\n", "let b;\na = b ?? c;\n")
+	expectPrintedNormalAndMangle(t, "let b; a = b != null ? b : c", "let b;\na = b != null ? b : c;\n", "let b;\na = b ?? c;\n")
+	expectPrintedNormalAndMangle(t, "let b; a = b == null ? b : c", "let b;\na = b == null ? b : c;\n", "let b;\na = b == null ? b : c;\n")
+	expectPrintedNormalAndMangle(t, "let b; a = b != null ? c : b", "let b;\na = b != null ? c : b;\n", "let b;\na = b != null ? c : b;\n")
 
-	expectPrintedMangle(t, "let b; a = null == b ? c : b", "let b;\na = b ?? c;\n")
-	expectPrintedMangle(t, "let b; a = null != b ? b : c", "let b;\na = b ?? c;\n")
-	expectPrintedMangle(t, "let b; a = null == b ? b : c", "let b;\na = b == null ? b : c;\n")
-	expectPrintedMangle(t, "let b; a = null != b ? c : b", "let b;\na = b != null ? c : b;\n")
+	expectPrintedNormalAndMangle(t, "let b; a = null == b ? c : b", "let b;\na = null == b ? c : b;\n", "let b;\na = b ?? c;\n")
+	expectPrintedNormalAndMangle(t, "let b; a = null != b ? b : c", "let b;\na = null != b ? b : c;\n", "let b;\na = b ?? c;\n")
+	expectPrintedNormalAndMangle(t, "let b; a = null == b ? b : c", "let b;\na = null == b ? b : c;\n", "let b;\na = b == null ? b : c;\n")
+	expectPrintedNormalAndMangle(t, "let b; a = null != b ? c : b", "let b;\na = null != b ? c : b;\n", "let b;\na = b != null ? c : b;\n")
 
 	// Don't do this if the condition has side effects
-	expectPrintedMangle(t, "let b; a = b.x == null ? c : b.x", "let b;\na = b.x == null ? c : b.x;\n")
-	expectPrintedMangle(t, "let b; a = b.x != null ? b.x : c", "let b;\na = b.x != null ? b.x : c;\n")
-	expectPrintedMangle(t, "let b; a = null == b.x ? c : b.x", "let b;\na = b.x == null ? c : b.x;\n")
-	expectPrintedMangle(t, "let b; a = null != b.x ? b.x : c", "let b;\na = b.x != null ? b.x : c;\n")
+	expectPrintedNormalAndMangle(t, "let b; a = b.x == null ? c : b.x", "let b;\na = b.x == null ? c : b.x;\n", "let b;\na = b.x == null ? c : b.x;\n")
+	expectPrintedNormalAndMangle(t, "let b; a = b.x != null ? b.x : c", "let b;\na = b.x != null ? b.x : c;\n", "let b;\na = b.x != null ? b.x : c;\n")
+	expectPrintedNormalAndMangle(t, "let b; a = null == b.x ? c : b.x", "let b;\na = null == b.x ? c : b.x;\n", "let b;\na = b.x == null ? c : b.x;\n")
+	expectPrintedNormalAndMangle(t, "let b; a = null != b.x ? b.x : c", "let b;\na = null != b.x ? b.x : c;\n", "let b;\na = b.x != null ? b.x : c;\n")
 
 	// Don't do this for strict equality comparisons
-	expectPrintedMangle(t, "let b; a = b === null ? c : b", "let b;\na = b === null ? c : b;\n")
-	expectPrintedMangle(t, "let b; a = b !== null ? b : c", "let b;\na = b !== null ? b : c;\n")
-	expectPrintedMangle(t, "let b; a = null === b ? c : b", "let b;\na = b === null ? c : b;\n")
-	expectPrintedMangle(t, "let b; a = null !== b ? b : c", "let b;\na = b !== null ? b : c;\n")
+	expectPrintedNormalAndMangle(t, "let b; a = b === null ? c : b", "let b;\na = b === null ? c : b;\n", "let b;\na = b === null ? c : b;\n")
+	expectPrintedNormalAndMangle(t, "let b; a = b !== null ? b : c", "let b;\na = b !== null ? b : c;\n", "let b;\na = b !== null ? b : c;\n")
+	expectPrintedNormalAndMangle(t, "let b; a = null === b ? c : b", "let b;\na = null === b ? c : b;\n", "let b;\na = b === null ? c : b;\n")
+	expectPrintedNormalAndMangle(t, "let b; a = null !== b ? b : c", "let b;\na = null !== b ? b : c;\n", "let b;\na = b !== null ? b : c;\n")
 
-	expectPrintedMangle(t, "let b; a = null === b || b === undefined ? c : b", "let b;\na = b ?? c;\n")
-	expectPrintedMangle(t, "let b; a = b !== undefined && b !== null ? b : c", "let b;\na = b ?? c;\n")
+	expectPrintedNormalAndMangle(t, "let b; a = null === b || b === undefined ? c : b", "let b;\na = null === b || b === void 0 ? c : b;\n", "let b;\na = b ?? c;\n")
+	expectPrintedNormalAndMangle(t, "let b; a = b !== undefined && b !== null ? b : c", "let b;\na = b !== void 0 && b !== null ? b : c;\n", "let b;\na = b ?? c;\n")
 
 	// Distinguish between negative an non-negative zero (i.e. Object.is)
 	// https://developer.mozilla.org/en-US/docs/Web/JavaScript/Equality_comparisons_and_sameness
-	expectPrintedMangle(t, "a(b ? 0 : 0)", "a((b, 0));\n")
-	expectPrintedMangle(t, "a(b ? +0 : -0)", "a(b ? 0 : -0);\n")
-	expectPrintedMangle(t, "a(b ? +0 : 0)", "a((b, 0));\n")
-	expectPrintedMangle(t, "a(b ? -0 : 0)", "a(b ? -0 : 0);\n")
+	expectPrintedNormalAndMangle(t, "a(b ? 0 : 0)", "a(b ? 0 : 0);\n", "a((b, 0));\n")
+	expectPrintedNormalAndMangle(t, "a(b ? +0 : -0)", "a(b ? 0 : -0);\n", "a(b ? 0 : -0);\n")
+	expectPrintedNormalAndMangle(t, "a(b ? +0 : 0)", "a(b ? 0 : 0);\n", "a((b, 0));\n")
+	expectPrintedNormalAndMangle(t, "a(b ? -0 : 0)", "a(b ? -0 : 0);\n", "a(b ? -0 : 0);\n")
 
-	expectPrintedMangle(t, "a ? b : b", "a, b;\n")
-	expectPrintedMangle(t, "let a; a ? b : b", "let a;\nb;\n")
+	expectPrintedNormalAndMangle(t, "a ? b : b", "a ? b : b;\n", "a, b;\n")
+	expectPrintedNormalAndMangle(t, "let a; a ? b : b", "let a;\na ? b : b;\n", "let a;\nb;\n")
 
-	expectPrintedMangle(t, "a ? -b : -b", "a, -b;\n")
-	expectPrintedMangle(t, "a ? b.c : b.c", "a, b.c;\n")
-	expectPrintedMangle(t, "a ? b?.c : b?.c", "a, b?.c;\n")
-	expectPrintedMangle(t, "a ? b[c] : b[c]", "a, b[c];\n")
-	expectPrintedMangle(t, "a ? b() : b()", "a, b();\n")
-	expectPrintedMangle(t, "a ? b?.() : b?.()", "a, b?.();\n")
-	expectPrintedMangle(t, "a ? b?.[c] : b?.[c]", "a, b?.[c];\n")
-	expectPrintedMangle(t, "a ? b == c : b == c", "a, b == c;\n")
-	expectPrintedMangle(t, "a ? b.c(d + e[f]) : b.c(d + e[f])", "a, b.c(d + e[f]);\n")
+	expectPrintedNormalAndMangle(t, "a ? -b : -b", "a ? -b : -b;\n", "a, -b;\n")
+	expectPrintedNormalAndMangle(t, "a ? b.c : b.c", "a ? b.c : b.c;\n", "a, b.c;\n")
+	expectPrintedNormalAndMangle(t, "a ? b?.c : b?.c", "a ? b?.c : b?.c;\n", "a, b?.c;\n")
+	expectPrintedNormalAndMangle(t, "a ? b[c] : b[c]", "a ? b[c] : b[c];\n", "a, b[c];\n")
+	expectPrintedNormalAndMangle(t, "a ? b() : b()", "a ? b() : b();\n", "a, b();\n")
+	expectPrintedNormalAndMangle(t, "a ? b?.() : b?.()", "a ? b?.() : b?.();\n", "a, b?.();\n")
+	expectPrintedNormalAndMangle(t, "a ? b?.[c] : b?.[c]", "a ? b?.[c] : b?.[c];\n", "a, b?.[c];\n")
+	expectPrintedNormalAndMangle(t, "a ? b == c : b == c", "a ? b == c : b == c;\n", "a, b == c;\n")
+	expectPrintedNormalAndMangle(t, "a ? b.c(d + e[f]) : b.c(d + e[f])", "a ? b.c(d + e[f]) : b.c(d + e[f]);\n", "a, b.c(d + e[f]);\n")
 
-	expectPrintedMangle(t, "a ? -b : !b", "a ? -b : b;\n")
-	expectPrintedMangle(t, "a ? b() : b(c)", "a ? b() : b(c);\n")
-	expectPrintedMangle(t, "a ? b(c) : b(d)", "a ? b(c) : b(d);\n")
-	expectPrintedMangle(t, "a ? b?.c : b.c", "a ? b?.c : b.c;\n")
-	expectPrintedMangle(t, "a ? b?.() : b()", "a ? b?.() : b();\n")
-	expectPrintedMangle(t, "a ? b?.[c] : b[c]", "a ? b?.[c] : b[c];\n")
-	expectPrintedMangle(t, "a ? b == c : b != c", "a ? b == c : b != c;\n")
-	expectPrintedMangle(t, "a ? b.c(d + e[f]) : b.c(d + e[g])", "a ? b.c(d + e[f]) : b.c(d + e[g]);\n")
+	expectPrintedNormalAndMangle(t, "a ? -b : !b", "a ? -b : !b;\n", "a ? -b : b;\n")
+	expectPrintedNormalAndMangle(t, "a ? b() : b(c)", "a ? b() : b(c);\n", "a ? b() : b(c);\n")
+	expectPrintedNormalAndMangle(t, "a ? b(c) : b(d)", "a ? b(c) : b(d);\n", "a ? b(c) : b(d);\n")
+	expectPrintedNormalAndMangle(t, "a ? b?.c : b.c", "a ? b?.c : b.c;\n", "a ? b?.c : b.c;\n")
+	expectPrintedNormalAndMangle(t, "a ? b?.() : b()", "a ? b?.() : b();\n", "a ? b?.() : b();\n")
+	expectPrintedNormalAndMangle(t, "a ? b?.[c] : b[c]", "a ? b?.[c] : b[c];\n", "a ? b?.[c] : b[c];\n")
+	expectPrintedNormalAndMangle(t, "a ? b == c : b != c", "a ? b == c : b != c;\n", "a ? b == c : b != c;\n")
+	expectPrintedNormalAndMangle(t, "a ? b.c(d + e[f]) : b.c(d + e[g])", "a ? b.c(d + e[f]) : b.c(d + e[g]);\n", "a ? b.c(d + e[f]) : b.c(d + e[g]);\n")
 
-	expectPrintedMangle(t, "(a, b) ? c : d", "a, b ? c : d;\n")
+	expectPrintedNormalAndMangle(t, "(a, b) ? c : d", "(a, b) ? c : d;\n", "a, b ? c : d;\n")
 
-	expectPrintedMangle(t, "return a && ((b && c) && (d && e))", "return a && b && c && d && e;\n")
-	expectPrintedMangle(t, "return a || ((b || c) || (d || e))", "return a || b || c || d || e;\n")
-	expectPrintedMangle(t, "return a ?? ((b ?? c) ?? (d ?? e))", "return a ?? b ?? c ?? d ?? e;\n")
-	expectPrintedMangle(t, "if (a) if (b) if (c) d", "a && b && c && d;\n")
-	expectPrintedMangle(t, "if (!a) if (!b) if (!c) d", "a || b || c || d;\n")
-	expectPrintedMangle(t, "let a, b, c; return a != null ? a : b != null ? b : c", "let a, b, c;\nreturn a ?? b ?? c;\n")
+	expectPrintedNormalAndMangle(t, "return a && ((b && c) && (d && e))", "return a && (b && c && (d && e));\n", "return a && b && c && d && e;\n")
+	expectPrintedNormalAndMangle(t, "return a || ((b || c) || (d || e))", "return a || (b || c || (d || e));\n", "return a || b || c || d || e;\n")
+	expectPrintedNormalAndMangle(t, "return a ?? ((b ?? c) ?? (d ?? e))", "return a ?? (b ?? c ?? (d ?? e));\n", "return a ?? b ?? c ?? d ?? e;\n")
+	expectPrintedNormalAndMangle(t, "if (a) if (b) if (c) d", "if (a) {\n  if (b) {\n    if (c)\n      d;\n  }\n}\n", "a && b && c && d;\n")
+	expectPrintedNormalAndMangle(t, "if (!a) if (!b) if (!c) d", "if (!a) {\n  if (!b) {\n    if (!c)\n      d;\n  }\n}\n", "a || b || c || d;\n")
+	expectPrintedNormalAndMangle(t, "let a, b, c; return a != null ? a : b != null ? b : c", "let a, b, c;\nreturn a != null ? a : b != null ? b : c;\n", "let a, b, c;\nreturn a ?? b ?? c;\n")
 
 	expectPrintedMangle(t, "if (a) return c; if (b) return d;", "if (a)\n  return c;\nif (b)\n  return d;\n")
 	expectPrintedMangle(t, "if (a) return c; if (b) return c;", "if (a || b)\n  return c;\n")
@@ -3171,25 +3312,79 @@ func TestMangleIf(t *testing.T) {
 	expectPrintedMangle(t, "x: while (x) y: while (y) { if (a) continue x; if (b) continue x; }",
 		"x:\n  for (; x; )\n    y:\n      for (; y; )\n        if (a || b)\n          continue x;\n")
 
-	expectPrintedMangle(t, "if (x ? y : 0) foo()", "x && y && foo();\n")
-	expectPrintedMangle(t, "if (x ? y : 1) foo()", "(!x || y) && foo();\n")
-	expectPrintedMangle(t, "if (x ? 0 : y) foo()", "!x && y && foo();\n")
-	expectPrintedMangle(t, "if (x ? 1 : y) foo()", "(x || y) && foo();\n")
+	expectPrintedNormalAndMangle(t, "if (x ? y : 0) foo()", "if (x ? y : 0)\n  foo();\n", "x && y && foo();\n")
+	expectPrintedNormalAndMangle(t, "if (x ? y : 1) foo()", "if (x ? y : 1)\n  foo();\n", "(!x || y) && foo();\n")
+	expectPrintedNormalAndMangle(t, "if (x ? 0 : y) foo()", "if (x ? 0 : y)\n  foo();\n", "!x && y && foo();\n")
+	expectPrintedNormalAndMangle(t, "if (x ? 1 : y) foo()", "if (x ? 1 : y)\n  foo();\n", "(x || y) && foo();\n")
 
-	expectPrintedMangle(t, "if (x ? y : 0) ; else foo()", "x && y || foo();\n")
-	expectPrintedMangle(t, "if (x ? y : 1) ; else foo()", "!x || y || foo();\n")
-	expectPrintedMangle(t, "if (x ? 0 : y) ; else foo()", "!x && y || foo();\n")
-	expectPrintedMangle(t, "if (x ? 1 : y) ; else foo()", "x || y || foo();\n")
+	expectPrintedNormalAndMangle(t, "if (x ? y : 0) ; else foo()", "if (x ? y : 0)\n  ;\nelse\n  foo();\n", "x && y || foo();\n")
+	expectPrintedNormalAndMangle(t, "if (x ? y : 1) ; else foo()", "if (x ? y : 1)\n  ;\nelse\n  foo();\n", "!x || y || foo();\n")
+	expectPrintedNormalAndMangle(t, "if (x ? 0 : y) ; else foo()", "if (x ? 0 : y)\n  ;\nelse\n  foo();\n", "!x && y || foo();\n")
+	expectPrintedNormalAndMangle(t, "if (x ? 1 : y) ; else foo()", "if (x ? 1 : y)\n  ;\nelse\n  foo();\n", "x || y || foo();\n")
 
-	expectPrintedMangle(t, "(x ? y : 0) && foo();", "x && y && foo();\n")
-	expectPrintedMangle(t, "(x ? y : 1) && foo();", "(!x || y) && foo();\n")
-	expectPrintedMangle(t, "(x ? 0 : y) && foo();", "!x && y && foo();\n")
-	expectPrintedMangle(t, "(x ? 1 : y) && foo();", "(x || y) && foo();\n")
+	expectPrintedNormalAndMangle(t, "(x ? y : 0) && foo();", "(x ? y : 0) && foo();\n", "x && y && foo();\n")
+	expectPrintedNormalAndMangle(t, "(x ? y : 1) && foo();", "(x ? y : 1) && foo();\n", "(!x || y) && foo();\n")
+	expectPrintedNormalAndMangle(t, "(x ? 0 : y) && foo();", "(x ? 0 : y) && foo();\n", "!x && y && foo();\n")
+	expectPrintedNormalAndMangle(t, "(x ? 1 : y) && foo();", "(x ? 1 : y) && foo();\n", "(x || y) && foo();\n")
 
-	expectPrintedMangle(t, "(x ? y : 0) || foo();", "x && y || foo();\n")
-	expectPrintedMangle(t, "(x ? y : 1) || foo();", "!x || y || foo();\n")
-	expectPrintedMangle(t, "(x ? 0 : y) || foo();", "!x && y || foo();\n")
-	expectPrintedMangle(t, "(x ? 1 : y) || foo();", "x || y || foo();\n")
+	expectPrintedNormalAndMangle(t, "(x ? y : 0) || foo();", "(x ? y : 0) || foo();\n", "x && y || foo();\n")
+	expectPrintedNormalAndMangle(t, "(x ? y : 1) || foo();", "(x ? y : 1) || foo();\n", "!x || y || foo();\n")
+	expectPrintedNormalAndMangle(t, "(x ? 0 : y) || foo();", "(x ? 0 : y) || foo();\n", "!x && y || foo();\n")
+	expectPrintedNormalAndMangle(t, "(x ? 1 : y) || foo();", "(x ? 1 : y) || foo();\n", "x || y || foo();\n")
+
+	expectPrintedNormalAndMangle(t, "if (!!a || !!b) throw 0", "if (!!a || !!b)\n  throw 0;\n", "if (a || b)\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if (!!a && !!b) throw 0", "if (!!a && !!b)\n  throw 0;\n", "if (a && b)\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if (!!a ? !!b : !!c) throw 0", "if (!!a ? !!b : !!c)\n  throw 0;\n", "if (a ? b : c)\n  throw 0;\n")
+
+	expectPrintedNormalAndMangle(t, "if ((a + b) !== 0) throw 0", "if (a + b !== 0)\n  throw 0;\n", "if (a + b !== 0)\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if ((a | b) !== 0) throw 0", "if ((a | b) !== 0)\n  throw 0;\n", "if (a | b)\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if ((a & b) !== 0) throw 0", "if ((a & b) !== 0)\n  throw 0;\n", "if (a & b)\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if ((a ^ b) !== 0) throw 0", "if ((a ^ b) !== 0)\n  throw 0;\n", "if (a ^ b)\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if ((a << b) !== 0) throw 0", "if (a << b !== 0)\n  throw 0;\n", "if (a << b)\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if ((a >> b) !== 0) throw 0", "if (a >> b !== 0)\n  throw 0;\n", "if (a >> b)\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if ((a >>> b) !== 0) throw 0", "if (a >>> b !== 0)\n  throw 0;\n", "if (a >>> b)\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if (+a !== 0) throw 0", "if (+a !== 0)\n  throw 0;\n", "if (+a != 0)\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if (~a !== 0) throw 0", "if (~a !== 0)\n  throw 0;\n", "if (~a)\n  throw 0;\n")
+
+	expectPrintedNormalAndMangle(t, "if (0 != (a + b)) throw 0", "if (0 != a + b)\n  throw 0;\n", "if (a + b != 0)\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if (0 != (a | b)) throw 0", "if (0 != (a | b))\n  throw 0;\n", "if (a | b)\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if (0 != (a & b)) throw 0", "if (0 != (a & b))\n  throw 0;\n", "if (a & b)\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if (0 != (a ^ b)) throw 0", "if (0 != (a ^ b))\n  throw 0;\n", "if (a ^ b)\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if (0 != (a << b)) throw 0", "if (0 != a << b)\n  throw 0;\n", "if (a << b)\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if (0 != (a >> b)) throw 0", "if (0 != a >> b)\n  throw 0;\n", "if (a >> b)\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if (0 != (a >>> b)) throw 0", "if (0 != a >>> b)\n  throw 0;\n", "if (a >>> b)\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if (0 != +a) throw 0", "if (0 != +a)\n  throw 0;\n", "if (+a != 0)\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if (0 != ~a) throw 0", "if (0 != ~a)\n  throw 0;\n", "if (~a)\n  throw 0;\n")
+
+	expectPrintedNormalAndMangle(t, "if ((a + b) === 0) throw 0", "if (a + b === 0)\n  throw 0;\n", "if (a + b === 0)\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if ((a | b) === 0) throw 0", "if ((a | b) === 0)\n  throw 0;\n", "if (!(a | b))\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if ((a & b) === 0) throw 0", "if ((a & b) === 0)\n  throw 0;\n", "if (!(a & b))\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if ((a ^ b) === 0) throw 0", "if ((a ^ b) === 0)\n  throw 0;\n", "if (!(a ^ b))\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if ((a << b) === 0) throw 0", "if (a << b === 0)\n  throw 0;\n", "if (!(a << b))\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if ((a >> b) === 0) throw 0", "if (a >> b === 0)\n  throw 0;\n", "if (!(a >> b))\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if ((a >>> b) === 0) throw 0", "if (a >>> b === 0)\n  throw 0;\n", "if (!(a >>> b))\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if (+a === 0) throw 0", "if (+a === 0)\n  throw 0;\n", "if (+a == 0)\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if (~a === 0) throw 0", "if (~a === 0)\n  throw 0;\n", "if (!~a)\n  throw 0;\n")
+
+	expectPrintedNormalAndMangle(t, "if (0 == (a + b)) throw 0", "if (0 == a + b)\n  throw 0;\n", "if (a + b == 0)\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if (0 == (a | b)) throw 0", "if (0 == (a | b))\n  throw 0;\n", "if (!(a | b))\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if (0 == (a & b)) throw 0", "if (0 == (a & b))\n  throw 0;\n", "if (!(a & b))\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if (0 == (a ^ b)) throw 0", "if (0 == (a ^ b))\n  throw 0;\n", "if (!(a ^ b))\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if (0 == (a << b)) throw 0", "if (0 == a << b)\n  throw 0;\n", "if (!(a << b))\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if (0 == (a >> b)) throw 0", "if (0 == a >> b)\n  throw 0;\n", "if (!(a >> b))\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if (0 == (a >>> b)) throw 0", "if (0 == a >>> b)\n  throw 0;\n", "if (!(a >>> b))\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if (0 == +a) throw 0", "if (0 == +a)\n  throw 0;\n", "if (+a == 0)\n  throw 0;\n")
+	expectPrintedNormalAndMangle(t, "if (0 == ~a) throw 0", "if (0 == ~a)\n  throw 0;\n", "if (!~a)\n  throw 0;\n")
+}
+
+func TestMangleWrapToAvoidAmbiguousElse(t *testing.T) {
+	expectPrintedMangle(t, "if (a) { if (b) return c } else return d", "if (a) {\n  if (b)\n    return c;\n} else\n  return d;\n")
+	expectPrintedMangle(t, "if (a) while (1) { if (b) return c } else return d", "if (a) {\n  for (; ; )\n    if (b)\n      return c;\n} else\n  return d;\n")
+	expectPrintedMangle(t, "if (a) for (;;) { if (b) return c } else return d", "if (a) {\n  for (; ; )\n    if (b)\n      return c;\n} else\n  return d;\n")
+	expectPrintedMangle(t, "if (a) for (x in y) { if (b) return c } else return d", "if (a) {\n  for (x in y)\n    if (b)\n      return c;\n} else\n  return d;\n")
+	expectPrintedMangle(t, "if (a) for (x of y) { if (b) return c } else return d", "if (a) {\n  for (x of y)\n    if (b)\n      return c;\n} else\n  return d;\n")
+	expectPrintedMangle(t, "if (a) with (x) { if (b) return c } else return d", "if (a) {\n  with (x)\n    if (b)\n      return c;\n} else\n  return d;\n")
+	expectPrintedMangle(t, "if (a) x: { if (b) return c } else return d", "if (a) {\n  x:\n    if (b)\n      return c;\n} else\n  return d;\n")
 }
 
 func TestMangleOptionalChain(t *testing.T) {
@@ -3244,63 +3439,63 @@ func TestMangleOptionalChain(t *testing.T) {
 }
 
 func TestMangleNullOrUndefinedWithSideEffects(t *testing.T) {
-	expectPrintedMangle(t, "x(y ?? 1)", "x(y ?? 1);\n")
-	expectPrintedMangle(t, "x(y.z ?? 1)", "x(y.z ?? 1);\n")
-	expectPrintedMangle(t, "x(y[z] ?? 1)", "x(y[z] ?? 1);\n")
+	expectPrintedNormalAndMangle(t, "x(y ?? 1)", "x(y ?? 1);\n", "x(y ?? 1);\n")
+	expectPrintedNormalAndMangle(t, "x(y.z ?? 1)", "x(y.z ?? 1);\n", "x(y.z ?? 1);\n")
+	expectPrintedNormalAndMangle(t, "x(y[z] ?? 1)", "x(y[z] ?? 1);\n", "x(y[z] ?? 1);\n")
 
-	expectPrintedMangle(t, "x(0 ?? 1)", "x(0);\n")
-	expectPrintedMangle(t, "x(0n ?? 1)", "x(0n);\n")
-	expectPrintedMangle(t, "x('' ?? 1)", "x(\"\");\n")
-	expectPrintedMangle(t, "x(/./ ?? 1)", "x(/./);\n")
-	expectPrintedMangle(t, "x({} ?? 1)", "x({});\n")
-	expectPrintedMangle(t, "x((() => {}) ?? 1)", "x(() => {\n});\n")
-	expectPrintedMangle(t, "x(class {} ?? 1)", "x(class {\n});\n")
-	expectPrintedMangle(t, "x(function() {} ?? 1)", "x(function() {\n});\n")
+	expectPrintedNormalAndMangle(t, "x(0 ?? 1)", "x(0);\n", "x(0);\n")
+	expectPrintedNormalAndMangle(t, "x(0n ?? 1)", "x(0n);\n", "x(0n);\n")
+	expectPrintedNormalAndMangle(t, "x('' ?? 1)", "x(\"\");\n", "x(\"\");\n")
+	expectPrintedNormalAndMangle(t, "x(/./ ?? 1)", "x(/./);\n", "x(/./);\n")
+	expectPrintedNormalAndMangle(t, "x({} ?? 1)", "x({});\n", "x({});\n")
+	expectPrintedNormalAndMangle(t, "x((() => {}) ?? 1)", "x(() => {\n});\n", "x(() => {\n});\n")
+	expectPrintedNormalAndMangle(t, "x(class {} ?? 1)", "x(class {\n});\n", "x(class {\n});\n")
+	expectPrintedNormalAndMangle(t, "x(function() {} ?? 1)", "x(function() {\n});\n", "x(function() {\n});\n")
 
-	expectPrintedMangle(t, "x(null ?? 1)", "x(1);\n")
-	expectPrintedMangle(t, "x(undefined ?? 1)", "x(1);\n")
+	expectPrintedNormalAndMangle(t, "x(null ?? 1)", "x(1);\n", "x(1);\n")
+	expectPrintedNormalAndMangle(t, "x(undefined ?? 1)", "x(1);\n", "x(1);\n")
 
-	expectPrintedMangle(t, "x(void y ?? 1)", "x(void y ?? 1);\n")
-	expectPrintedMangle(t, "x(-y ?? 1)", "x(-y);\n")
-	expectPrintedMangle(t, "x(+y ?? 1)", "x(+y);\n")
-	expectPrintedMangle(t, "x(!y ?? 1)", "x(!y);\n")
-	expectPrintedMangle(t, "x(~y ?? 1)", "x(~y);\n")
-	expectPrintedMangle(t, "x(--y ?? 1)", "x(--y);\n")
-	expectPrintedMangle(t, "x(++y ?? 1)", "x(++y);\n")
-	expectPrintedMangle(t, "x(y-- ?? 1)", "x(y--);\n")
-	expectPrintedMangle(t, "x(y++ ?? 1)", "x(y++);\n")
-	expectPrintedMangle(t, "x(delete y ?? 1)", "x(delete y);\n")
-	expectPrintedMangle(t, "x(typeof y ?? 1)", "x(typeof y);\n")
+	expectPrintedNormalAndMangle(t, "x(void y ?? 1)", "x(void y ?? 1);\n", "x(void y ?? 1);\n")
+	expectPrintedNormalAndMangle(t, "x(-y ?? 1)", "x(-y);\n", "x(-y);\n")
+	expectPrintedNormalAndMangle(t, "x(+y ?? 1)", "x(+y);\n", "x(+y);\n")
+	expectPrintedNormalAndMangle(t, "x(!y ?? 1)", "x(!y);\n", "x(!y);\n")
+	expectPrintedNormalAndMangle(t, "x(~y ?? 1)", "x(~y);\n", "x(~y);\n")
+	expectPrintedNormalAndMangle(t, "x(--y ?? 1)", "x(--y);\n", "x(--y);\n")
+	expectPrintedNormalAndMangle(t, "x(++y ?? 1)", "x(++y);\n", "x(++y);\n")
+	expectPrintedNormalAndMangle(t, "x(y-- ?? 1)", "x(y--);\n", "x(y--);\n")
+	expectPrintedNormalAndMangle(t, "x(y++ ?? 1)", "x(y++);\n", "x(y++);\n")
+	expectPrintedNormalAndMangle(t, "x(delete y ?? 1)", "x(delete y);\n", "x(delete y);\n")
+	expectPrintedNormalAndMangle(t, "x(typeof y ?? 1)", "x(typeof y);\n", "x(typeof y);\n")
 
-	expectPrintedMangle(t, "x((y, 0) ?? 1)", "x((y, 0));\n")
-	expectPrintedMangle(t, "x((y, !z) ?? 1)", "x((y, !z));\n")
-	expectPrintedMangle(t, "x((y, null) ?? 1)", "x((y, null ?? 1));\n")
-	expectPrintedMangle(t, "x((y, void z) ?? 1)", "x((y, void z ?? 1));\n")
+	expectPrintedNormalAndMangle(t, "x((y, 0) ?? 1)", "x((y, 0));\n", "x((y, 0));\n")
+	expectPrintedNormalAndMangle(t, "x((y, !z) ?? 1)", "x((y, !z));\n", "x((y, !z));\n")
+	expectPrintedNormalAndMangle(t, "x((y, null) ?? 1)", "x((y, null) ?? 1);\n", "x((y, null ?? 1));\n")
+	expectPrintedNormalAndMangle(t, "x((y, void z) ?? 1)", "x((y, void z) ?? 1);\n", "x((y, void z ?? 1));\n")
 
-	expectPrintedMangle(t, "x((y + z) ?? 1)", "x(y + z);\n")
-	expectPrintedMangle(t, "x((y - z) ?? 1)", "x(y - z);\n")
-	expectPrintedMangle(t, "x((y * z) ?? 1)", "x(y * z);\n")
-	expectPrintedMangle(t, "x((y / z) ?? 1)", "x(y / z);\n")
-	expectPrintedMangle(t, "x((y % z) ?? 1)", "x(y % z);\n")
-	expectPrintedMangle(t, "x((y ** z) ?? 1)", "x(y ** z);\n")
-	expectPrintedMangle(t, "x((y << z) ?? 1)", "x(y << z);\n")
-	expectPrintedMangle(t, "x((y >> z) ?? 1)", "x(y >> z);\n")
-	expectPrintedMangle(t, "x((y >>> z) ?? 1)", "x(y >>> z);\n")
-	expectPrintedMangle(t, "x((y | z) ?? 1)", "x(y | z);\n")
-	expectPrintedMangle(t, "x((y & z) ?? 1)", "x(y & z);\n")
-	expectPrintedMangle(t, "x((y ^ z) ?? 1)", "x(y ^ z);\n")
-	expectPrintedMangle(t, "x((y < z) ?? 1)", "x(y < z);\n")
-	expectPrintedMangle(t, "x((y > z) ?? 1)", "x(y > z);\n")
-	expectPrintedMangle(t, "x((y <= z) ?? 1)", "x(y <= z);\n")
-	expectPrintedMangle(t, "x((y >= z) ?? 1)", "x(y >= z);\n")
-	expectPrintedMangle(t, "x((y == z) ?? 1)", "x(y == z);\n")
-	expectPrintedMangle(t, "x((y != z) ?? 1)", "x(y != z);\n")
-	expectPrintedMangle(t, "x((y === z) ?? 1)", "x(y === z);\n")
-	expectPrintedMangle(t, "x((y !== z) ?? 1)", "x(y !== z);\n")
+	expectPrintedNormalAndMangle(t, "x((y + z) ?? 1)", "x(y + z);\n", "x(y + z);\n")
+	expectPrintedNormalAndMangle(t, "x((y - z) ?? 1)", "x(y - z);\n", "x(y - z);\n")
+	expectPrintedNormalAndMangle(t, "x((y * z) ?? 1)", "x(y * z);\n", "x(y * z);\n")
+	expectPrintedNormalAndMangle(t, "x((y / z) ?? 1)", "x(y / z);\n", "x(y / z);\n")
+	expectPrintedNormalAndMangle(t, "x((y % z) ?? 1)", "x(y % z);\n", "x(y % z);\n")
+	expectPrintedNormalAndMangle(t, "x((y ** z) ?? 1)", "x(y ** z);\n", "x(y ** z);\n")
+	expectPrintedNormalAndMangle(t, "x((y << z) ?? 1)", "x(y << z);\n", "x(y << z);\n")
+	expectPrintedNormalAndMangle(t, "x((y >> z) ?? 1)", "x(y >> z);\n", "x(y >> z);\n")
+	expectPrintedNormalAndMangle(t, "x((y >>> z) ?? 1)", "x(y >>> z);\n", "x(y >>> z);\n")
+	expectPrintedNormalAndMangle(t, "x((y | z) ?? 1)", "x(y | z);\n", "x(y | z);\n")
+	expectPrintedNormalAndMangle(t, "x((y & z) ?? 1)", "x(y & z);\n", "x(y & z);\n")
+	expectPrintedNormalAndMangle(t, "x((y ^ z) ?? 1)", "x(y ^ z);\n", "x(y ^ z);\n")
+	expectPrintedNormalAndMangle(t, "x((y < z) ?? 1)", "x(y < z);\n", "x(y < z);\n")
+	expectPrintedNormalAndMangle(t, "x((y > z) ?? 1)", "x(y > z);\n", "x(y > z);\n")
+	expectPrintedNormalAndMangle(t, "x((y <= z) ?? 1)", "x(y <= z);\n", "x(y <= z);\n")
+	expectPrintedNormalAndMangle(t, "x((y >= z) ?? 1)", "x(y >= z);\n", "x(y >= z);\n")
+	expectPrintedNormalAndMangle(t, "x((y == z) ?? 1)", "x(y == z);\n", "x(y == z);\n")
+	expectPrintedNormalAndMangle(t, "x((y != z) ?? 1)", "x(y != z);\n", "x(y != z);\n")
+	expectPrintedNormalAndMangle(t, "x((y === z) ?? 1)", "x(y === z);\n", "x(y === z);\n")
+	expectPrintedNormalAndMangle(t, "x((y !== z) ?? 1)", "x(y !== z);\n", "x(y !== z);\n")
 
-	expectPrintedMangle(t, "x((y || z) ?? 1)", "x((y || z) ?? 1);\n")
-	expectPrintedMangle(t, "x((y && z) ?? 1)", "x((y && z) ?? 1);\n")
-	expectPrintedMangle(t, "x((y ?? z) ?? 1)", "x(y ?? z ?? 1);\n")
+	expectPrintedNormalAndMangle(t, "x((y || z) ?? 1)", "x((y || z) ?? 1);\n", "x((y || z) ?? 1);\n")
+	expectPrintedNormalAndMangle(t, "x((y && z) ?? 1)", "x((y && z) ?? 1);\n", "x((y && z) ?? 1);\n")
+	expectPrintedNormalAndMangle(t, "x((y ?? z) ?? 1)", "x(y ?? z ?? 1);\n", "x(y ?? z ?? 1);\n")
 }
 
 func TestMangleBooleanWithSideEffects(t *testing.T) {
@@ -3433,175 +3628,226 @@ func TestMangleReturn(t *testing.T) {
 }
 
 func TestMangleThrow(t *testing.T) {
-	expectPrintedMangle(t, "function foo() { a = b; if (a) throw a; if (b) c = b; throw c; }",
+	expectPrintedNormalAndMangle(t,
+		"function foo() { a = b; if (a) throw a; if (b) c = b; throw c; }",
+		"function foo() {\n  a = b;\n  if (a)\n    throw a;\n  if (b)\n    c = b;\n  throw c;\n}\n",
 		"function foo() {\n  throw a = b, a || (b && (c = b), c);\n}\n")
-	expectPrintedMangle(t, "function foo() { if (!a) throw b; throw c; }", "function foo() {\n  throw a ? c : b;\n}\n")
+	expectPrintedNormalAndMangle(t,
+		"function foo() { if (!a) throw b; throw c; }",
+		"function foo() {\n  if (!a)\n    throw b;\n  throw c;\n}\n",
+		"function foo() {\n  throw a ? c : b;\n}\n")
 
-	expectPrintedMangle(t, "if (1) throw a(); else throw b()", "throw a();\n")
-	expectPrintedMangle(t, "if (0) throw a(); else throw b()", "throw b();\n")
-	expectPrintedMangle(t, "if (a) throw b(); else throw c()", "throw a ? b() : c();\n")
-	expectPrintedMangle(t, "if (!a) throw b(); else throw c()", "throw a ? c() : b();\n")
-	expectPrintedMangle(t, "if (!!a) throw b(); else throw c()", "throw a ? b() : c();\n")
-	expectPrintedMangle(t, "if (!!!a) throw b(); else throw c()", "throw a ? c() : b();\n")
+	expectPrintedNormalAndMangle(t, "if (1) throw a(); else throw b()", "if (1)\n  throw a();\nelse\n  throw b();\n", "throw a();\n")
+	expectPrintedNormalAndMangle(t, "if (0) throw a(); else throw b()", "if (0)\n  throw a();\nelse\n  throw b();\n", "throw b();\n")
+	expectPrintedNormalAndMangle(t, "if (a) throw b(); else throw c()", "if (a)\n  throw b();\nelse\n  throw c();\n", "throw a ? b() : c();\n")
+	expectPrintedNormalAndMangle(t, "if (!a) throw b(); else throw c()", "if (!a)\n  throw b();\nelse\n  throw c();\n", "throw a ? c() : b();\n")
+	expectPrintedNormalAndMangle(t, "if (!!a) throw b(); else throw c()", "if (!!a)\n  throw b();\nelse\n  throw c();\n", "throw a ? b() : c();\n")
+	expectPrintedNormalAndMangle(t, "if (!!!a) throw b(); else throw c()", "if (!!!a)\n  throw b();\nelse\n  throw c();\n", "throw a ? c() : b();\n")
 
-	expectPrintedMangle(t, "if (1) throw a(); throw b()", "throw a();\n")
-	expectPrintedMangle(t, "if (0) throw a(); throw b()", "throw b();\n")
-	expectPrintedMangle(t, "if (a) throw b(); throw c()", "throw a ? b() : c();\n")
-	expectPrintedMangle(t, "if (!a) throw b(); throw c()", "throw a ? c() : b();\n")
-	expectPrintedMangle(t, "if (!!a) throw b(); throw c()", "throw a ? b() : c();\n")
-	expectPrintedMangle(t, "if (!!!a) throw b(); throw c()", "throw a ? c() : b();\n")
+	expectPrintedNormalAndMangle(t, "if (1) throw a(); throw b()", "if (1)\n  throw a();\nthrow b();\n", "throw a();\n")
+	expectPrintedNormalAndMangle(t, "if (0) throw a(); throw b()", "if (0)\n  throw a();\nthrow b();\n", "throw b();\n")
+	expectPrintedNormalAndMangle(t, "if (a) throw b(); throw c()", "if (a)\n  throw b();\nthrow c();\n", "throw a ? b() : c();\n")
+	expectPrintedNormalAndMangle(t, "if (!a) throw b(); throw c()", "if (!a)\n  throw b();\nthrow c();\n", "throw a ? c() : b();\n")
+	expectPrintedNormalAndMangle(t, "if (!!a) throw b(); throw c()", "if (!!a)\n  throw b();\nthrow c();\n", "throw a ? b() : c();\n")
+	expectPrintedNormalAndMangle(t, "if (!!!a) throw b(); throw c()", "if (!!!a)\n  throw b();\nthrow c();\n", "throw a ? c() : b();\n")
 }
 
 func TestMangleInitializer(t *testing.T) {
-	expectPrintedMangle(t, "const a = undefined", "const a = void 0;\n")
-	expectPrintedMangle(t, "let a = undefined", "let a;\n")
-	expectPrintedMangle(t, "let {} = undefined", "let {} = void 0;\n")
-	expectPrintedMangle(t, "let [] = undefined", "let [] = void 0;\n")
-	expectPrintedMangle(t, "var a = undefined", "var a = void 0;\n")
-	expectPrintedMangle(t, "var {} = undefined", "var {} = void 0;\n")
-	expectPrintedMangle(t, "var [] = undefined", "var [] = void 0;\n")
+	expectPrintedNormalAndMangle(t, "const a = undefined", "const a = void 0;\n", "const a = void 0;\n")
+	expectPrintedNormalAndMangle(t, "let a = undefined", "let a = void 0;\n", "let a;\n")
+	expectPrintedNormalAndMangle(t, "let {} = undefined", "let {} = void 0;\n", "let {} = void 0;\n")
+	expectPrintedNormalAndMangle(t, "let [] = undefined", "let [] = void 0;\n", "let [] = void 0;\n")
+	expectPrintedNormalAndMangle(t, "var a = undefined", "var a = void 0;\n", "var a = void 0;\n")
+	expectPrintedNormalAndMangle(t, "var {} = undefined", "var {} = void 0;\n", "var {} = void 0;\n")
+	expectPrintedNormalAndMangle(t, "var [] = undefined", "var [] = void 0;\n", "var [] = void 0;\n")
 }
 
 func TestMangleCall(t *testing.T) {
-	expectPrintedMangle(t, "x = foo(1, ...[], 2)", "x = foo(1, 2);\n")
-	expectPrintedMangle(t, "x = foo(1, ...2, 3)", "x = foo(1, ...2, 3);\n")
-	expectPrintedMangle(t, "x = foo(1, ...[2], 3)", "x = foo(1, 2, 3);\n")
-	expectPrintedMangle(t, "x = foo(1, ...[2, 3], 4)", "x = foo(1, 2, 3, 4);\n")
-	expectPrintedMangle(t, "x = foo(1, ...[2, ...y, 3], 4)", "x = foo(1, 2, ...y, 3, 4);\n")
-	expectPrintedMangle(t, "x = foo(1, ...{a, b}, 4)", "x = foo(1, ...{ a, b }, 4);\n")
+	expectPrintedNormalAndMangle(t, "x = foo(1, ...[], 2)", "x = foo(1, ...[], 2);\n", "x = foo(1, 2);\n")
+	expectPrintedNormalAndMangle(t, "x = foo(1, ...2, 3)", "x = foo(1, ...2, 3);\n", "x = foo(1, ...2, 3);\n")
+	expectPrintedNormalAndMangle(t, "x = foo(1, ...[2], 3)", "x = foo(1, ...[2], 3);\n", "x = foo(1, 2, 3);\n")
+	expectPrintedNormalAndMangle(t, "x = foo(1, ...[2, 3], 4)", "x = foo(1, ...[2, 3], 4);\n", "x = foo(1, 2, 3, 4);\n")
+	expectPrintedNormalAndMangle(t, "x = foo(1, ...[2, ...y, 3], 4)", "x = foo(1, ...[2, ...y, 3], 4);\n", "x = foo(1, 2, ...y, 3, 4);\n")
+	expectPrintedNormalAndMangle(t, "x = foo(1, ...{a, b}, 4)", "x = foo(1, ...{ a, b }, 4);\n", "x = foo(1, ...{ a, b }, 4);\n")
 
 	// Holes must become undefined
-	expectPrintedMangle(t, "x = foo(1, ...[,2,,], 3)", "x = foo(1, void 0, 2, void 0, 3);\n")
+	expectPrintedNormalAndMangle(t, "x = foo(1, ...[,2,,], 3)", "x = foo(1, ...[, 2, ,], 3);\n", "x = foo(1, void 0, 2, void 0, 3);\n")
+}
+
+func TestMangleNew(t *testing.T) {
+	expectPrintedNormalAndMangle(t, "x = new foo(1, ...[], 2)", "x = new foo(1, ...[], 2);\n", "x = new foo(1, 2);\n")
+	expectPrintedNormalAndMangle(t, "x = new foo(1, ...2, 3)", "x = new foo(1, ...2, 3);\n", "x = new foo(1, ...2, 3);\n")
+	expectPrintedNormalAndMangle(t, "x = new foo(1, ...[2], 3)", "x = new foo(1, ...[2], 3);\n", "x = new foo(1, 2, 3);\n")
+	expectPrintedNormalAndMangle(t, "x = new foo(1, ...[2, 3], 4)", "x = new foo(1, ...[2, 3], 4);\n", "x = new foo(1, 2, 3, 4);\n")
+	expectPrintedNormalAndMangle(t, "x = new foo(1, ...[2, ...y, 3], 4)", "x = new foo(1, ...[2, ...y, 3], 4);\n", "x = new foo(1, 2, ...y, 3, 4);\n")
+	expectPrintedNormalAndMangle(t, "x = new foo(1, ...{a, b}, 4)", "x = new foo(1, ...{ a, b }, 4);\n", "x = new foo(1, ...{ a, b }, 4);\n")
+
+	// Holes must become undefined
+	expectPrintedNormalAndMangle(t, "x = new foo(1, ...[,2,,], 3)", "x = new foo(1, ...[, 2, ,], 3);\n", "x = new foo(1, void 0, 2, void 0, 3);\n")
 }
 
 func TestMangleArray(t *testing.T) {
-	expectPrintedMangle(t, "x = [1, ...[], 2]", "x = [1, 2];\n")
-	expectPrintedMangle(t, "x = [1, ...2, 3]", "x = [1, ...2, 3];\n")
-	expectPrintedMangle(t, "x = [1, ...[2], 3]", "x = [1, 2, 3];\n")
-	expectPrintedMangle(t, "x = [1, ...[2, 3], 4]", "x = [1, 2, 3, 4];\n")
-	expectPrintedMangle(t, "x = [1, ...[2, ...y, 3], 4]", "x = [1, 2, ...y, 3, 4];\n")
-	expectPrintedMangle(t, "x = [1, ...{a, b}, 4]", "x = [1, ...{ a, b }, 4];\n")
+	expectPrintedNormalAndMangle(t, "x = [1, ...[], 2]", "x = [1, ...[], 2];\n", "x = [1, 2];\n")
+	expectPrintedNormalAndMangle(t, "x = [1, ...2, 3]", "x = [1, ...2, 3];\n", "x = [1, ...2, 3];\n")
+	expectPrintedNormalAndMangle(t, "x = [1, ...[2], 3]", "x = [1, ...[2], 3];\n", "x = [1, 2, 3];\n")
+	expectPrintedNormalAndMangle(t, "x = [1, ...[2, 3], 4]", "x = [1, ...[2, 3], 4];\n", "x = [1, 2, 3, 4];\n")
+	expectPrintedNormalAndMangle(t, "x = [1, ...[2, ...y, 3], 4]", "x = [1, ...[2, ...y, 3], 4];\n", "x = [1, 2, ...y, 3, 4];\n")
+	expectPrintedNormalAndMangle(t, "x = [1, ...{a, b}, 4]", "x = [1, ...{ a, b }, 4];\n", "x = [1, ...{ a, b }, 4];\n")
 
 	// Holes must become undefined, which is different than a hole
-	expectPrintedMangle(t, "x = [1, ...[,2,,], 3]", "x = [1, void 0, 2, void 0, 3];\n")
+	expectPrintedNormalAndMangle(t, "x = [1, ...[,2,,], 3]", "x = [1, ...[, 2, ,], 3];\n", "x = [1, void 0, 2, void 0, 3];\n")
 }
 
 func TestMangleObject(t *testing.T) {
-	expectPrintedMangle(t, "x = {['y']: z}", "x = { y: z };\n")
-	expectPrintedMangle(t, "x = {['y']() {}}", "x = { y() {\n} };\n")
-	expectPrintedMangle(t, "x = {get ['y']() {}}", "x = { get y() {\n} };\n")
-	expectPrintedMangle(t, "x = {set ['y'](z) {}}", "x = { set y(z) {\n} };\n")
-	expectPrintedMangle(t, "x = {async ['y']() {}}", "x = { async y() {\n} };\n")
-	expectPrintedMangle(t, "({['y']: z} = x)", "({ y: z } = x);\n")
+	expectPrintedNormalAndMangle(t, "x = {['y']: z}", "x = { [\"y\"]: z };\n", "x = { y: z };\n")
+	expectPrintedNormalAndMangle(t, "x = {['y']() {}}", "x = { [\"y\"]() {\n} };\n", "x = { y() {\n} };\n")
+	expectPrintedNormalAndMangle(t, "x = {get ['y']() {}}", "x = { get [\"y\"]() {\n} };\n", "x = { get y() {\n} };\n")
+	expectPrintedNormalAndMangle(t, "x = {set ['y'](z) {}}", "x = { set [\"y\"](z) {\n} };\n", "x = { set y(z) {\n} };\n")
+	expectPrintedNormalAndMangle(t, "x = {async ['y']() {}}", "x = { async [\"y\"]() {\n} };\n", "x = { async y() {\n} };\n")
+	expectPrintedNormalAndMangle(t, "({['y']: z} = x)", "({ [\"y\"]: z } = x);\n", "({ y: z } = x);\n")
 
-	expectPrintedMangle(t, "x = {a, ...{}, b}", "x = { a, b };\n")
-	expectPrintedMangle(t, "x = {a, ...b, c}", "x = { a, ...b, c };\n")
-	expectPrintedMangle(t, "x = {a, ...{b}, c}", "x = { a, b, c };\n")
-	expectPrintedMangle(t, "x = {a, ...{b() {}}, c}", "x = { a, b() {\n}, c };\n")
-	expectPrintedMangle(t, "x = {a, ...{b, c}, d}", "x = { a, b, c, d };\n")
-	expectPrintedMangle(t, "x = {a, ...{b, ...y, c}, d}", "x = { a, b, ...y, c, d };\n")
-	expectPrintedMangle(t, "x = {a, ...[b, c], d}", "x = { a, ...[b, c], d };\n")
+	expectPrintedNormalAndMangle(t, "x = {a, ...{}, b}", "x = { a, ...{}, b };\n", "x = { a, b };\n")
+	expectPrintedNormalAndMangle(t, "x = {a, ...b, c}", "x = { a, ...b, c };\n", "x = { a, ...b, c };\n")
+	expectPrintedNormalAndMangle(t, "x = {a, ...{b}, c}", "x = { a, ...{ b }, c };\n", "x = { a, b, c };\n")
+	expectPrintedNormalAndMangle(t, "x = {a, ...{b() {}}, c}", "x = { a, ...{ b() {\n} }, c };\n", "x = { a, b() {\n}, c };\n")
+	expectPrintedNormalAndMangle(t, "x = {a, ...{b, c}, d}", "x = { a, ...{ b, c }, d };\n", "x = { a, b, c, d };\n")
+	expectPrintedNormalAndMangle(t, "x = {a, ...{b, ...y, c}, d}", "x = { a, ...{ b, ...y, c }, d };\n", "x = { a, b, ...y, c, d };\n")
+	expectPrintedNormalAndMangle(t, "x = {a, ...[b, c], d}", "x = { a, ...[b, c], d };\n", "x = { a, ...[b, c], d };\n")
 
 	// Computed properties should be ok
-	expectPrintedMangle(t, "x = {a, ...{[b]: c}, d}", "x = { a, [b]: c, d };\n")
-	expectPrintedMangle(t, "x = {a, ...{[b]() {}}, c}", "x = { a, [b]() {\n}, c };\n")
+	expectPrintedNormalAndMangle(t, "x = {a, ...{[b]: c}, d}", "x = { a, ...{ [b]: c }, d };\n", "x = { a, [b]: c, d };\n")
+	expectPrintedNormalAndMangle(t, "x = {a, ...{[b]() {}}, c}", "x = { a, ...{ [b]() {\n} }, c };\n", "x = { a, [b]() {\n}, c };\n")
 
 	// Getters and setters are not supported
-	expectPrintedMangle(t, "x = {a, ...{b, get c() { return y++ }, d}, e}",
+	expectPrintedNormalAndMangle(t,
+		"x = {a, ...{b, get c() { return y++ }, d}, e}",
+		"x = { a, ...{ b, get c() {\n  return y++;\n}, d }, e };\n",
 		"x = { a, b, ...{ get c() {\n  return y++;\n}, d }, e };\n")
-	expectPrintedMangle(t, "x = {a, ...{b, set c(_) { throw _ }, d}, e}",
+	expectPrintedNormalAndMangle(t,
+		"x = {a, ...{b, set c(_) { throw _ }, d}, e}",
+		"x = { a, ...{ b, set c(_) {\n  throw _;\n}, d }, e };\n",
 		"x = { a, b, ...{ set c(_) {\n  throw _;\n}, d }, e };\n")
 
 	// "__proto__" is not supported
-	expectPrintedMangle(t, "x = {a, ...{b, __proto__: c, d}, e}",
+	expectPrintedNormalAndMangle(t,
+		"x = {a, ...{b, __proto__: c, d}, e}",
+		"x = { a, ...{ b, __proto__: c, d }, e };\n",
 		"x = { a, b, ...{ __proto__: c, d }, e };\n")
-	expectPrintedMangle(t, "x = {a, ...{b, ['__proto__']: c, d}, e}",
+	expectPrintedNormalAndMangle(t,
+		"x = {a, ...{b, ['__proto__']: c, d}, e}",
+		"x = { a, ...{ b, [\"__proto__\"]: c, d }, e };\n",
 		"x = { a, b, [\"__proto__\"]: c, d, e };\n")
-	expectPrintedMangle(t, "x = {a, ...{b, __proto__() {}, c}, d}",
+	expectPrintedNormalAndMangle(t,
+		"x = {a, ...{b, __proto__() {}, c}, d}",
+		"x = { a, ...{ b, __proto__() {\n}, c }, d };\n",
 		"x = { a, b, __proto__() {\n}, c, d };\n")
 
 	// Spread is ignored for certain values
-	expectPrintedMangle(t, "x = {a, ...true, b}", "x = { a, b };\n")
-	expectPrintedMangle(t, "x = {a, ...null, b}", "x = { a, b };\n")
-	expectPrintedMangle(t, "x = {a, ...void 0, b}", "x = { a, b };\n")
-	expectPrintedMangle(t, "x = {a, ...123, b}", "x = { a, b };\n")
-	expectPrintedMangle(t, "x = {a, ...123n, b}", "x = { a, b };\n")
-	expectPrintedMangle(t, "x = {a, .../x/, b}", "x = { a, b };\n")
-	expectPrintedMangle(t, "x = {a, ...function(){}, b}", "x = { a, b };\n")
-	expectPrintedMangle(t, "x = {a, ...()=>{}, b}", "x = { a, b };\n")
-	expectPrintedMangle(t, "x = {a, ...'123', b}", "x = { a, ...\"123\", b };\n")
-	expectPrintedMangle(t, "x = {a, ...[1, 2, 3], b}", "x = { a, ...[1, 2, 3], b };\n")
-	expectPrintedMangle(t, "x = {a, ...(()=>{})(), b}", "x = { a, ...(() => {\n})(), b };\n")
+	expectPrintedNormalAndMangle(t, "x = {a, ...true, b}", "x = { a, ...true, b };\n", "x = { a, b };\n")
+	expectPrintedNormalAndMangle(t, "x = {a, ...null, b}", "x = { a, ...null, b };\n", "x = { a, b };\n")
+	expectPrintedNormalAndMangle(t, "x = {a, ...void 0, b}", "x = { a, ...void 0, b };\n", "x = { a, b };\n")
+	expectPrintedNormalAndMangle(t, "x = {a, ...123, b}", "x = { a, ...123, b };\n", "x = { a, b };\n")
+	expectPrintedNormalAndMangle(t, "x = {a, ...123n, b}", "x = { a, ...123n, b };\n", "x = { a, b };\n")
+	expectPrintedNormalAndMangle(t, "x = {a, .../x/, b}", "x = { a, .../x/, b };\n", "x = { a, b };\n")
+	expectPrintedNormalAndMangle(t, "x = {a, ...function(){}, b}", "x = { a, ...function() {\n}, b };\n", "x = { a, b };\n")
+	expectPrintedNormalAndMangle(t, "x = {a, ...()=>{}, b}", "x = { a, ...() => {\n}, b };\n", "x = { a, b };\n")
+	expectPrintedNormalAndMangle(t, "x = {a, ...'123', b}", "x = { a, ...\"123\", b };\n", "x = { a, ...\"123\", b };\n")
+	expectPrintedNormalAndMangle(t, "x = {a, ...[1, 2, 3], b}", "x = { a, ...[1, 2, 3], b };\n", "x = { a, ...[1, 2, 3], b };\n")
+	expectPrintedNormalAndMangle(t, "x = {a, ...(()=>{})(), b}", "x = { a, ...(() => {\n})(), b };\n", "x = { a, ...(() => {\n})(), b };\n")
 
 	// Check simple cases of object simplification (advanced cases are checked in end-to-end tests)
-	expectPrintedMangle(t, "x = {['y']: z}.y", "x = { y: z }.y;\n")
-	expectPrintedMangle(t, "x = {['y']: z}.y; var z", "x = z;\nvar z;\n")
-	expectPrintedMangle(t, "x = {foo: foo(), y: 1}.y", "x = { foo: foo(), y: 1 }.y;\n")
-	expectPrintedMangle(t, "x = {foo: /* @__PURE__ */ foo(), y: 1}.y", "x = 1;\n")
-	expectPrintedMangle(t, "x = {__proto__: null}.y", "x = void 0;\n")
-	expectPrintedMangle(t, "x = {__proto__: null, y: 1}.y", "x = 1;\n")
-	expectPrintedMangle(t, "x = {__proto__: null}.__proto__", "x = void 0;\n")
-	expectPrintedMangle(t, "x = {['__proto__']: null}.y", "x = { [\"__proto__\"]: null }.y;\n")
-	expectPrintedMangle(t, "x = {['__proto__']: null, y: 1}.y", "x = { [\"__proto__\"]: null, y: 1 }.y;\n")
-	expectPrintedMangle(t, "x = {['__proto__']: null}.__proto__", "x = { [\"__proto__\"]: null }.__proto__;\n")
+	expectPrintedNormalAndMangle(t, "x = {['y']: z}.y", "x = { [\"y\"]: z }.y;\n", "x = { y: z }.y;\n")
+	expectPrintedNormalAndMangle(t, "x = {['y']: z}.y; var z", "x = { [\"y\"]: z }.y;\nvar z;\n", "x = z;\nvar z;\n")
+	expectPrintedNormalAndMangle(t, "x = {foo: foo(), y: 1}.y", "x = { foo: foo(), y: 1 }.y;\n", "x = { foo: foo(), y: 1 }.y;\n")
+	expectPrintedNormalAndMangle(t, "x = {foo: /* @__PURE__ */ foo(), y: 1}.y", "x = { foo: /* @__PURE__ */ foo(), y: 1 }.y;\n", "x = 1;\n")
+	expectPrintedNormalAndMangle(t, "x = {__proto__: null}.y", "x = { __proto__: null }.y;\n", "x = void 0;\n")
+	expectPrintedNormalAndMangle(t, "x = {__proto__: null, y: 1}.y", "x = { __proto__: null, y: 1 }.y;\n", "x = 1;\n")
+	expectPrintedNormalAndMangle(t, "x = {__proto__: null}.__proto__", "x = { __proto__: null }.__proto__;\n", "x = void 0;\n")
+	expectPrintedNormalAndMangle(t, "x = {['__proto__']: null}.y", "x = { [\"__proto__\"]: null }.y;\n", "x = { [\"__proto__\"]: null }.y;\n")
+	expectPrintedNormalAndMangle(t, "x = {['__proto__']: null, y: 1}.y", "x = { [\"__proto__\"]: null, y: 1 }.y;\n", "x = { [\"__proto__\"]: null, y: 1 }.y;\n")
+	expectPrintedNormalAndMangle(t, "x = {['__proto__']: null}.__proto__", "x = { [\"__proto__\"]: null }.__proto__;\n", "x = { [\"__proto__\"]: null }.__proto__;\n")
 
-	expectPrinted(t, "x = {y: 1}?.y", "x = { y: 1 }?.y;\n")
-	expectPrinted(t, "x = {y: 1}?.['y']", "x = { y: 1 }?.[\"y\"];\n")
-	expectPrinted(t, "x = {y: {z: 1}}?.y.z", "x = { y: { z: 1 } }?.y.z;\n")
-	expectPrinted(t, "x = {y: {z: 1}}?.y?.z", "x = { y: { z: 1 } }?.y?.z;\n")
-	expectPrinted(t, "x = {y() {}}?.y()", "x = { y() {\n} }?.y();\n")
+	expectPrintedNormalAndMangle(t, "x = {y: 1}?.y", "x = { y: 1 }?.y;\n", "x = 1;\n")
+	expectPrintedNormalAndMangle(t, "x = {y: 1}?.['y']", "x = { y: 1 }?.[\"y\"];\n", "x = 1;\n")
+	expectPrintedNormalAndMangle(t, "x = {y: {z: 1}}?.y.z", "x = { y: { z: 1 } }?.y.z;\n", "x = 1;\n")
+	expectPrintedNormalAndMangle(t, "x = {y: {z: 1}}?.y?.z", "x = { y: { z: 1 } }?.y?.z;\n", "x = { z: 1 }?.z;\n")
+	expectPrintedNormalAndMangle(t, "x = {y() {}}?.y()", "x = { y() {\n} }?.y();\n", "x = { y() {\n} }.y();\n")
 
-	expectPrintedMangle(t, "x = {y: 1}?.y", "x = 1;\n")
-	expectPrintedMangle(t, "x = {y: 1}?.['y']", "x = 1;\n")
-	expectPrintedMangle(t, "x = {y: {z: 1}}?.y.z", "x = 1;\n")
-	expectPrintedMangle(t, "x = {y: {z: 1}}?.y?.z", "x = { z: 1 }?.z;\n")
-	expectPrintedMangle(t, "x = {y() {}}?.y()", "x = { y() {\n} }.y();\n")
+	// Don't change the value of "this" for tagged template literals if the original syntax had a value for "this"
+	expectPrintedNormalAndMangle(t, "function f(x) { return {x}.x`` }", "function f(x) {\n  return { x }.x``;\n}\n", "function f(x) {\n  return { x }.x``;\n}\n")
+	expectPrintedNormalAndMangle(t, "function f(x) { return (0, {x}.x)`` }", "function f(x) {\n  return (0, { x }.x)``;\n}\n", "function f(x) {\n  return x``;\n}\n")
+}
+
+func TestMangleObjectJSX(t *testing.T) {
+	expectPrintedJSX(t, "x = <foo bar {...{}} />", "x = /* @__PURE__ */ React.createElement(\"foo\", { bar: true, ...{} });\n")
+	expectPrintedJSX(t, "x = <foo bar {...null} />", "x = /* @__PURE__ */ React.createElement(\"foo\", { bar: true, ...null });\n")
+	expectPrintedJSX(t, "x = <foo bar {...{bar}} />", "x = /* @__PURE__ */ React.createElement(\"foo\", { bar: true, ...{ bar } });\n")
+	expectPrintedJSX(t, "x = <foo bar {...bar} />", "x = /* @__PURE__ */ React.createElement(\"foo\", { bar: true, ...bar });\n")
+
+	expectPrintedMangleJSX(t, "x = <foo bar {...{}} />", "x = /* @__PURE__ */ React.createElement(\"foo\", { bar: true });\n")
+	expectPrintedMangleJSX(t, "x = <foo bar {...null} />", "x = /* @__PURE__ */ React.createElement(\"foo\", { bar: true });\n")
+	expectPrintedMangleJSX(t, "x = <foo bar {...{bar}} />", "x = /* @__PURE__ */ React.createElement(\"foo\", { bar: true, bar });\n")
+	expectPrintedMangleJSX(t, "x = <foo bar {...bar} />", "x = /* @__PURE__ */ React.createElement(\"foo\", { bar: true, ...bar });\n")
 }
 
 func TestMangleArrow(t *testing.T) {
-	expectPrintedMangle(t, "var a = () => {}", "var a = () => {\n};\n")
-	expectPrintedMangle(t, "var a = () => 123", "var a = () => 123;\n")
-	expectPrintedMangle(t, "var a = () => void 0", "var a = () => {\n};\n")
-	expectPrintedMangle(t, "var a = () => undefined", "var a = () => {\n};\n")
-	expectPrintedMangle(t, "var a = () => {return}", "var a = () => {\n};\n")
-	expectPrintedMangle(t, "var a = () => {return 123}", "var a = () => 123;\n")
-	expectPrintedMangle(t, "var a = () => {throw 123}", "var a = () => {\n  throw 123;\n};\n")
+	expectPrintedNormalAndMangle(t, "var a = () => {}", "var a = () => {\n};\n", "var a = () => {\n};\n")
+	expectPrintedNormalAndMangle(t, "var a = () => 123", "var a = () => 123;\n", "var a = () => 123;\n")
+	expectPrintedNormalAndMangle(t, "var a = () => void 0", "var a = () => void 0;\n", "var a = () => {\n};\n")
+	expectPrintedNormalAndMangle(t, "var a = () => undefined", "var a = () => void 0;\n", "var a = () => {\n};\n")
+	expectPrintedNormalAndMangle(t, "var a = () => {return}", "var a = () => {\n  return;\n};\n", "var a = () => {\n};\n")
+	expectPrintedNormalAndMangle(t, "var a = () => {return 123}", "var a = () => {\n  return 123;\n};\n", "var a = () => 123;\n")
+	expectPrintedNormalAndMangle(t, "var a = () => {throw 123}", "var a = () => {\n  throw 123;\n};\n", "var a = () => {\n  throw 123;\n};\n")
 }
 
 func TestMangleIIFE(t *testing.T) {
-	expectPrintedMangle(t, "var a = (() => {})()", "var a = (() => {\n})();\n")
-	expectPrintedMangle(t, "(() => {})()", "")
-	expectPrintedMangle(t, "(() => a())()", "a();\n")
-	expectPrintedMangle(t, "(() => { a() })()", "a();\n")
-	expectPrintedMangle(t, "(() => { return a() })()", "a();\n")
-	expectPrintedMangle(t, "(() => { let b = a; b() })()", "a();\n")
-	expectPrintedMangle(t, "(() => { let b = a; return b() })()", "a();\n")
-	expectPrintedMangle(t, "(async () => {})()", "")
-	expectPrintedMangle(t, "(async () => { a() })()", "(async () => a())();\n")
-	expectPrintedMangle(t, "(async () => { let b = a; b() })()", "(async () => a())();\n")
+	expectPrintedNormalAndMangle(t, "var a = (() => {})()", "var a = (() => {\n})();\n", "var a = (() => {\n})();\n")
+	expectPrintedNormalAndMangle(t, "(() => {})()", "(() => {\n})();\n", "")
+	expectPrintedNormalAndMangle(t, "(() => a())()", "(() => a())();\n", "a();\n")
+	expectPrintedNormalAndMangle(t, "(() => { a() })()", "(() => {\n  a();\n})();\n", "a();\n")
+	expectPrintedNormalAndMangle(t, "(() => { return a() })()", "(() => {\n  return a();\n})();\n", "a();\n")
+	expectPrintedNormalAndMangle(t, "(() => { let b = a; b() })()", "(() => {\n  let b = a;\n  b();\n})();\n", "a();\n")
+	expectPrintedNormalAndMangle(t, "(() => { let b = a; return b() })()", "(() => {\n  let b = a;\n  return b();\n})();\n", "a();\n")
+	expectPrintedNormalAndMangle(t, "(async () => {})()", "(async () => {\n})();\n", "")
+	expectPrintedNormalAndMangle(t, "(async () => { a() })()", "(async () => {\n  a();\n})();\n", "(async () => a())();\n")
+	expectPrintedNormalAndMangle(t, "(async () => { let b = a; b() })()", "(async () => {\n  let b = a;\n  b();\n})();\n", "(async () => a())();\n")
 
-	expectPrintedMangle(t, "var a = (function() {})()", "var a = function() {\n}();\n")
-	expectPrintedMangle(t, "(function() {})()", "")
-	expectPrintedMangle(t, "(function*() {})()", "")
-	expectPrintedMangle(t, "(async function() {})()", "")
-	expectPrintedMangle(t, "(function() { a() })()", "(function() {\n  a();\n})();\n")
-	expectPrintedMangle(t, "(function*() { a() })()", "(function* () {\n  a();\n})();\n")
-	expectPrintedMangle(t, "(async function() { a() })()", "(async function() {\n  a();\n})();\n")
+	expectPrintedNormalAndMangle(t, "var a = (function() {})()", "var a = function() {\n}();\n", "var a = function() {\n}();\n")
+	expectPrintedNormalAndMangle(t, "(function() {})()", "(function() {\n})();\n", "")
+	expectPrintedNormalAndMangle(t, "(function*() {})()", "(function* () {\n})();\n", "")
+	expectPrintedNormalAndMangle(t, "(async function() {})()", "(async function() {\n})();\n", "")
+	expectPrintedNormalAndMangle(t, "(function() { a() })()", "(function() {\n  a();\n})();\n", "(function() {\n  a();\n})();\n")
+	expectPrintedNormalAndMangle(t, "(function*() { a() })()", "(function* () {\n  a();\n})();\n", "(function* () {\n  a();\n})();\n")
+	expectPrintedNormalAndMangle(t, "(async function() { a() })()", "(async function() {\n  a();\n})();\n", "(async function() {\n  a();\n})();\n")
+
+	expectPrintedNormalAndMangle(t, "(() => x)()", "(() => x)();\n", "x;\n")
+	expectPrintedNormalAndMangle(t, "/* @__PURE__ */ (() => x)()", "/* @__PURE__ */ (() => x)();\n", "")
+	expectPrintedNormalAndMangle(t, "/* @__PURE__ */ (() => x)(y, z)", "/* @__PURE__ */ (() => x)(y, z);\n", "y, z;\n")
 }
 
 func TestMangleTemplate(t *testing.T) {
-	expectPrintedMangle(t, "_ = `a${x}b${y}c`", "_ = `a${x}b${y}c`;\n")
-	expectPrintedMangle(t, "_ = `a${x}b${'y'}c`", "_ = `a${x}byc`;\n")
-	expectPrintedMangle(t, "_ = `a${'x'}b${y}c`", "_ = `axb${y}c`;\n")
-	expectPrintedMangle(t, "_ = `a${'x'}b${'y'}c`", "_ = `axbyc`;\n")
+	expectPrintedNormalAndMangle(t, "_ = `a${x}b${y}c`", "_ = `a${x}b${y}c`;\n", "_ = `a${x}b${y}c`;\n")
+	expectPrintedNormalAndMangle(t, "_ = `a${x}b${'y'}c`", "_ = `a${x}b${\"y\"}c`;\n", "_ = `a${x}byc`;\n")
+	expectPrintedNormalAndMangle(t, "_ = `a${'x'}b${y}c`", "_ = `a${\"x\"}b${y}c`;\n", "_ = `axb${y}c`;\n")
+	expectPrintedNormalAndMangle(t, "_ = `a${'x'}b${'y'}c`", "_ = `a${\"x\"}b${\"y\"}c`;\n", "_ = `axbyc`;\n")
 
-	expectPrintedMangle(t, "tag`a${x}b${y}c`", "tag`a${x}b${y}c`;\n")
-	expectPrintedMangle(t, "tag`a${x}b${'y'}c`", "tag`a${x}b${\"y\"}c`;\n")
-	expectPrintedMangle(t, "tag`a${'x'}b${y}c`", "tag`a${\"x\"}b${y}c`;\n")
-	expectPrintedMangle(t, "tag`a${'x'}b${'y'}c`", "tag`a${\"x\"}b${\"y\"}c`;\n")
+	expectPrintedNormalAndMangle(t, "tag`a${x}b${y}c`", "tag`a${x}b${y}c`;\n", "tag`a${x}b${y}c`;\n")
+	expectPrintedNormalAndMangle(t, "tag`a${x}b${'y'}c`", "tag`a${x}b${\"y\"}c`;\n", "tag`a${x}b${\"y\"}c`;\n")
+	expectPrintedNormalAndMangle(t, "tag`a${'x'}b${y}c`", "tag`a${\"x\"}b${y}c`;\n", "tag`a${\"x\"}b${y}c`;\n")
+	expectPrintedNormalAndMangle(t, "tag`a${'x'}b${'y'}c`", "tag`a${\"x\"}b${\"y\"}c`;\n", "tag`a${\"x\"}b${\"y\"}c`;\n")
 
-	expectPrintedMangle(t, "(1, x.y)``", "(0, x.y)``;\n")
-	expectPrintedMangle(t, "(1, x[y])``", "(0, x[y])``;\n")
+	expectPrintedNormalAndMangle(t, "(1, x)``", "(1, x)``;\n", "x``;\n")
+	expectPrintedNormalAndMangle(t, "(1, x.y)``", "(1, x.y)``;\n", "(0, x.y)``;\n")
+	expectPrintedNormalAndMangle(t, "(1, x[y])``", "(1, x[y])``;\n", "(0, x[y])``;\n")
+	expectPrintedNormalAndMangle(t, "(true && x)``", "x``;\n", "x``;\n")
+	expectPrintedNormalAndMangle(t, "(true && x.y)``", "(0, x.y)``;\n", "(0, x.y)``;\n")
+	expectPrintedNormalAndMangle(t, "(true && x[y])``", "(0, x[y])``;\n", "(0, x[y])``;\n")
+	expectPrintedNormalAndMangle(t, "(false || x)``", "x``;\n", "x``;\n")
+	expectPrintedNormalAndMangle(t, "(false || x.y)``", "(0, x.y)``;\n", "(0, x.y)``;\n")
+	expectPrintedNormalAndMangle(t, "(false || x[y])``", "(0, x[y])``;\n", "(0, x[y])``;\n")
+	expectPrintedNormalAndMangle(t, "(null ?? x)``", "x``;\n", "x``;\n")
+	expectPrintedNormalAndMangle(t, "(null ?? x.y)``", "(0, x.y)``;\n", "(0, x.y)``;\n")
+	expectPrintedNormalAndMangle(t, "(null ?? x[y])``", "(0, x[y])``;\n", "(0, x[y])``;\n")
 
 	expectPrintedMangleTarget(t, 2015, "class Foo { #foo() { return this.#foo`` } }", `var _foo, foo_fn;
 class Foo {
@@ -3624,392 +3870,426 @@ _foo = new WeakSet(), foo_fn = function() {
   return __privateMethod(this, _foo, foo_fn)`+"``"+`;
 };
 `)
+
+	expectPrintedNormalAndMangle(t,
+		"function f(a) { let c = a.b; return c`` }",
+		"function f(a) {\n  let c = a.b;\n  return c``;\n}\n",
+		"function f(a) {\n  return (0, a.b)``;\n}\n")
+	expectPrintedNormalAndMangle(t,
+		"function f(a) { let c = a.b; return c`${x}` }",
+		"function f(a) {\n  let c = a.b;\n  return c`${x}`;\n}\n",
+		"function f(a) {\n  return (0, a.b)`${x}`;\n}\n")
 }
 
 func TestMangleTypeofIdentifier(t *testing.T) {
-	expectPrintedMangle(t, "return typeof (123, x)", "return typeof (0, x);\n")
-	expectPrintedMangle(t, "return typeof (123, x.y)", "return typeof x.y;\n")
-	expectPrintedMangle(t, "return typeof (123, x); var x", "return typeof x;\nvar x;\n")
+	expectPrintedNormalAndMangle(t, "return typeof (123, x)", "return typeof (123, x);\n", "return typeof (0, x);\n")
+	expectPrintedNormalAndMangle(t, "return typeof (123, x.y)", "return typeof (123, x.y);\n", "return typeof x.y;\n")
+	expectPrintedNormalAndMangle(t, "return typeof (123, x); var x", "return typeof (123, x);\nvar x;\n", "return typeof x;\nvar x;\n")
 
-	expectPrintedMangle(t, "return typeof (true && x)", "return typeof (0, x);\n")
-	expectPrintedMangle(t, "return typeof (true && x.y)", "return typeof x.y;\n")
-	expectPrintedMangle(t, "return typeof (true && x); var x", "return typeof x;\nvar x;\n")
+	expectPrintedNormalAndMangle(t, "return typeof (true && x)", "return typeof (0, x);\n", "return typeof (0, x);\n")
+	expectPrintedNormalAndMangle(t, "return typeof (true && x.y)", "return typeof x.y;\n", "return typeof x.y;\n")
+	expectPrintedNormalAndMangle(t, "return typeof (true && x); var x", "return typeof x;\nvar x;\n", "return typeof x;\nvar x;\n")
 
-	expectPrintedMangle(t, "return typeof (false || x)", "return typeof (0, x);\n")
-	expectPrintedMangle(t, "return typeof (false || x.y)", "return typeof x.y;\n")
-	expectPrintedMangle(t, "return typeof (false || x); var x", "return typeof x;\nvar x;\n")
+	expectPrintedNormalAndMangle(t, "return typeof (false || x)", "return typeof (0, x);\n", "return typeof (0, x);\n")
+	expectPrintedNormalAndMangle(t, "return typeof (false || x.y)", "return typeof x.y;\n", "return typeof x.y;\n")
+	expectPrintedNormalAndMangle(t, "return typeof (false || x); var x", "return typeof x;\nvar x;\n", "return typeof x;\nvar x;\n")
 }
 
 func TestMangleTypeofEqualsUndefined(t *testing.T) {
-	expectPrintedMangle(t, "return typeof x !== 'undefined'", "return typeof x < \"u\";\n")
-	expectPrintedMangle(t, "return typeof x != 'undefined'", "return typeof x < \"u\";\n")
-	expectPrintedMangle(t, "return 'undefined' !== typeof x", "return typeof x < \"u\";\n")
-	expectPrintedMangle(t, "return 'undefined' != typeof x", "return typeof x < \"u\";\n")
+	expectPrintedNormalAndMangle(t, "return typeof x !== 'undefined'", "return typeof x !== \"undefined\";\n", "return typeof x < \"u\";\n")
+	expectPrintedNormalAndMangle(t, "return typeof x != 'undefined'", "return typeof x != \"undefined\";\n", "return typeof x < \"u\";\n")
+	expectPrintedNormalAndMangle(t, "return 'undefined' !== typeof x", "return \"undefined\" !== typeof x;\n", "return typeof x < \"u\";\n")
+	expectPrintedNormalAndMangle(t, "return 'undefined' != typeof x", "return \"undefined\" != typeof x;\n", "return typeof x < \"u\";\n")
 
-	expectPrintedMangle(t, "return typeof x === 'undefined'", "return typeof x > \"u\";\n")
-	expectPrintedMangle(t, "return typeof x == 'undefined'", "return typeof x > \"u\";\n")
-	expectPrintedMangle(t, "return 'undefined' === typeof x", "return typeof x > \"u\";\n")
-	expectPrintedMangle(t, "return 'undefined' == typeof x", "return typeof x > \"u\";\n")
+	expectPrintedNormalAndMangle(t, "return typeof x === 'undefined'", "return typeof x === \"undefined\";\n", "return typeof x > \"u\";\n")
+	expectPrintedNormalAndMangle(t, "return typeof x == 'undefined'", "return typeof x == \"undefined\";\n", "return typeof x > \"u\";\n")
+	expectPrintedNormalAndMangle(t, "return 'undefined' === typeof x", "return \"undefined\" === typeof x;\n", "return typeof x > \"u\";\n")
+	expectPrintedNormalAndMangle(t, "return 'undefined' == typeof x", "return \"undefined\" == typeof x;\n", "return typeof x > \"u\";\n")
 }
 
 func TestMangleEquals(t *testing.T) {
-	expectPrintedMangle(t, "return typeof x === y", "return typeof x === y;\n")
-	expectPrintedMangle(t, "return typeof x !== y", "return typeof x !== y;\n")
-	expectPrintedMangle(t, "return y === typeof x", "return y === typeof x;\n")
-	expectPrintedMangle(t, "return y !== typeof x", "return y !== typeof x;\n")
+	expectPrintedNormalAndMangle(t, "return typeof x === y", "return typeof x === y;\n", "return typeof x === y;\n")
+	expectPrintedNormalAndMangle(t, "return typeof x !== y", "return typeof x !== y;\n", "return typeof x !== y;\n")
+	expectPrintedNormalAndMangle(t, "return y === typeof x", "return y === typeof x;\n", "return y === typeof x;\n")
+	expectPrintedNormalAndMangle(t, "return y !== typeof x", "return y !== typeof x;\n", "return y !== typeof x;\n")
 
-	expectPrintedMangle(t, "return typeof x === 'string'", "return typeof x == \"string\";\n")
-	expectPrintedMangle(t, "return typeof x !== 'string'", "return typeof x != \"string\";\n")
-	expectPrintedMangle(t, "return 'string' === typeof x", "return typeof x == \"string\";\n")
-	expectPrintedMangle(t, "return 'string' !== typeof x", "return typeof x != \"string\";\n")
+	expectPrintedNormalAndMangle(t, "return typeof x === 'string'", "return typeof x === \"string\";\n", "return typeof x == \"string\";\n")
+	expectPrintedNormalAndMangle(t, "return typeof x !== 'string'", "return typeof x !== \"string\";\n", "return typeof x != \"string\";\n")
+	expectPrintedNormalAndMangle(t, "return 'string' === typeof x", "return \"string\" === typeof x;\n", "return typeof x == \"string\";\n")
+	expectPrintedNormalAndMangle(t, "return 'string' !== typeof x", "return \"string\" !== typeof x;\n", "return typeof x != \"string\";\n")
 
-	expectPrintedMangle(t, "return a === 0", "return a === 0;\n")
-	expectPrintedMangle(t, "return a !== 0", "return a !== 0;\n")
-	expectPrintedMangle(t, "return +a === 0", "return +a == 0;\n") // No BigInt hazard
-	expectPrintedMangle(t, "return +a !== 0", "return +a != 0;\n")
-	expectPrintedMangle(t, "return -a === 0", "return -a === 0;\n") // BigInt hazard
-	expectPrintedMangle(t, "return -a !== 0", "return -a !== 0;\n")
+	expectPrintedNormalAndMangle(t, "return a === 0", "return a === 0;\n", "return a === 0;\n")
+	expectPrintedNormalAndMangle(t, "return a !== 0", "return a !== 0;\n", "return a !== 0;\n")
+	expectPrintedNormalAndMangle(t, "return +a === 0", "return +a === 0;\n", "return +a == 0;\n") // No BigInt hazard
+	expectPrintedNormalAndMangle(t, "return +a !== 0", "return +a !== 0;\n", "return +a != 0;\n")
+	expectPrintedNormalAndMangle(t, "return -a === 0", "return -a === 0;\n", "return -a === 0;\n") // BigInt hazard
+	expectPrintedNormalAndMangle(t, "return -a !== 0", "return -a !== 0;\n", "return -a !== 0;\n")
 
-	expectPrintedMangle(t, "return a === ''", "return a === \"\";\n")
-	expectPrintedMangle(t, "return a !== ''", "return a !== \"\";\n")
-	expectPrintedMangle(t, "return (a + '!') === 'a!'", "return a + \"!\" == \"a!\";\n")
-	expectPrintedMangle(t, "return (a + '!') !== 'a!'", "return a + \"!\" != \"a!\";\n")
-	expectPrintedMangle(t, "return (a += '!') === 'a!'", "return (a += \"!\") == \"a!\";\n")
-	expectPrintedMangle(t, "return (a += '!') !== 'a!'", "return (a += \"!\") != \"a!\";\n")
+	expectPrintedNormalAndMangle(t, "return a === ''", "return a === \"\";\n", "return a === \"\";\n")
+	expectPrintedNormalAndMangle(t, "return a !== ''", "return a !== \"\";\n", "return a !== \"\";\n")
+	expectPrintedNormalAndMangle(t, "return (a + '!') === 'a!'", "return a + \"!\" === \"a!\";\n", "return a + \"!\" == \"a!\";\n")
+	expectPrintedNormalAndMangle(t, "return (a + '!') !== 'a!'", "return a + \"!\" !== \"a!\";\n", "return a + \"!\" != \"a!\";\n")
+	expectPrintedNormalAndMangle(t, "return (a += '!') === 'a!'", "return (a += \"!\") === \"a!\";\n", "return (a += \"!\") == \"a!\";\n")
+	expectPrintedNormalAndMangle(t, "return (a += '!') !== 'a!'", "return (a += \"!\") !== \"a!\";\n", "return (a += \"!\") != \"a!\";\n")
 
-	expectPrintedMangle(t, "return a === false", "return a === false;\n")
-	expectPrintedMangle(t, "return a === true", "return a === true;\n")
-	expectPrintedMangle(t, "return a !== false", "return a !== false;\n")
-	expectPrintedMangle(t, "return a !== true", "return a !== true;\n")
-	expectPrintedMangle(t, "return !a === false", "return !!a;\n")
-	expectPrintedMangle(t, "return !a === true", "return !a;\n")
-	expectPrintedMangle(t, "return !a !== false", "return !a;\n")
-	expectPrintedMangle(t, "return !a !== true", "return !!a;\n")
-	expectPrintedMangle(t, "return false === !a", "return !!a;\n")
-	expectPrintedMangle(t, "return true === !a", "return !a;\n")
-	expectPrintedMangle(t, "return false !== !a", "return !a;\n")
-	expectPrintedMangle(t, "return true !== !a", "return !!a;\n")
+	expectPrintedNormalAndMangle(t, "return a === false", "return a === false;\n", "return a === false;\n")
+	expectPrintedNormalAndMangle(t, "return a === true", "return a === true;\n", "return a === true;\n")
+	expectPrintedNormalAndMangle(t, "return a !== false", "return a !== false;\n", "return a !== false;\n")
+	expectPrintedNormalAndMangle(t, "return a !== true", "return a !== true;\n", "return a !== true;\n")
+	expectPrintedNormalAndMangle(t, "return !a === false", "return !a === false;\n", "return !!a;\n")
+	expectPrintedNormalAndMangle(t, "return !a === true", "return !a === true;\n", "return !a;\n")
+	expectPrintedNormalAndMangle(t, "return !a !== false", "return !a !== false;\n", "return !a;\n")
+	expectPrintedNormalAndMangle(t, "return !a !== true", "return !a !== true;\n", "return !!a;\n")
+	expectPrintedNormalAndMangle(t, "return false === !a", "return false === !a;\n", "return !!a;\n")
+	expectPrintedNormalAndMangle(t, "return true === !a", "return true === !a;\n", "return !a;\n")
+	expectPrintedNormalAndMangle(t, "return false !== !a", "return false !== !a;\n", "return !a;\n")
+	expectPrintedNormalAndMangle(t, "return true !== !a", "return true !== !a;\n", "return !!a;\n")
 
-	expectPrintedMangle(t, "return a === !b", "return a === !b;\n")
-	expectPrintedMangle(t, "return a === !b", "return a === !b;\n")
-	expectPrintedMangle(t, "return a !== !b", "return a !== !b;\n")
-	expectPrintedMangle(t, "return a !== !b", "return a !== !b;\n")
-	expectPrintedMangle(t, "return !a === !b", "return !a == !b;\n")
-	expectPrintedMangle(t, "return !a === !b", "return !a == !b;\n")
-	expectPrintedMangle(t, "return !a !== !b", "return !a != !b;\n")
-	expectPrintedMangle(t, "return !a !== !b", "return !a != !b;\n")
+	expectPrintedNormalAndMangle(t, "return a === !b", "return a === !b;\n", "return a === !b;\n")
+	expectPrintedNormalAndMangle(t, "return a === !b", "return a === !b;\n", "return a === !b;\n")
+	expectPrintedNormalAndMangle(t, "return a !== !b", "return a !== !b;\n", "return a !== !b;\n")
+	expectPrintedNormalAndMangle(t, "return a !== !b", "return a !== !b;\n", "return a !== !b;\n")
+	expectPrintedNormalAndMangle(t, "return !a === !b", "return !a === !b;\n", "return !a == !b;\n")
+	expectPrintedNormalAndMangle(t, "return !a === !b", "return !a === !b;\n", "return !a == !b;\n")
+	expectPrintedNormalAndMangle(t, "return !a !== !b", "return !a !== !b;\n", "return !a != !b;\n")
+	expectPrintedNormalAndMangle(t, "return !a !== !b", "return !a !== !b;\n", "return !a != !b;\n")
 
 	// These have BigInt hazards and should not be changed
-	expectPrintedMangle(t, "return (a, -1n) !== -1", "return a, -1n !== -1;\n")
-	expectPrintedMangle(t, "return (a, ~1n) !== -1", "return a, ~1n !== -1;\n")
-	expectPrintedMangle(t, "return (a -= 1n) !== -1", "return (a -= 1n) !== -1;\n")
-	expectPrintedMangle(t, "return (a *= 1n) !== -1", "return (a *= 1n) !== -1;\n")
-	expectPrintedMangle(t, "return (a **= 1n) !== -1", "return (a **= 1n) !== -1;\n")
-	expectPrintedMangle(t, "return (a /= 1n) !== -1", "return (a /= 1n) !== -1;\n")
-	expectPrintedMangle(t, "return (a %= 1n) !== -1", "return (a %= 1n) !== -1;\n")
-	expectPrintedMangle(t, "return (a &= 1n) !== -1", "return (a &= 1n) !== -1;\n")
-	expectPrintedMangle(t, "return (a |= 1n) !== -1", "return (a |= 1n) !== -1;\n")
-	expectPrintedMangle(t, "return (a ^= 1n) !== -1", "return (a ^= 1n) !== -1;\n")
+	expectPrintedNormalAndMangle(t, "return (a, -1n) !== -1", "return (a, -1n) !== -1;\n", "return a, -1n !== -1;\n")
+	expectPrintedNormalAndMangle(t, "return (a, ~1n) !== -1", "return (a, ~1n) !== -1;\n", "return a, ~1n !== -1;\n")
+	expectPrintedNormalAndMangle(t, "return (a -= 1n) !== -1", "return (a -= 1n) !== -1;\n", "return (a -= 1n) !== -1;\n")
+	expectPrintedNormalAndMangle(t, "return (a *= 1n) !== -1", "return (a *= 1n) !== -1;\n", "return (a *= 1n) !== -1;\n")
+	expectPrintedNormalAndMangle(t, "return (a **= 1n) !== -1", "return (a **= 1n) !== -1;\n", "return (a **= 1n) !== -1;\n")
+	expectPrintedNormalAndMangle(t, "return (a /= 1n) !== -1", "return (a /= 1n) !== -1;\n", "return (a /= 1n) !== -1;\n")
+	expectPrintedNormalAndMangle(t, "return (a %= 1n) !== -1", "return (a %= 1n) !== -1;\n", "return (a %= 1n) !== -1;\n")
+	expectPrintedNormalAndMangle(t, "return (a &= 1n) !== -1", "return (a &= 1n) !== -1;\n", "return (a &= 1n) !== -1;\n")
+	expectPrintedNormalAndMangle(t, "return (a |= 1n) !== -1", "return (a |= 1n) !== -1;\n", "return (a |= 1n) !== -1;\n")
+	expectPrintedNormalAndMangle(t, "return (a ^= 1n) !== -1", "return (a ^= 1n) !== -1;\n", "return (a ^= 1n) !== -1;\n")
 }
 
 func TestMangleUnaryInsideComma(t *testing.T) {
-	expectPrintedMangle(t, "return -(a, b)", "return a, -b;\n")
-	expectPrintedMangle(t, "return +(a, b)", "return a, +b;\n")
-	expectPrintedMangle(t, "return ~(a, b)", "return a, ~b;\n")
-	expectPrintedMangle(t, "return !(a, b)", "return a, !b;\n")
-	expectPrintedMangle(t, "return void (a, b)", "return a, void b;\n")
-	expectPrintedMangle(t, "return typeof (a, b)", "return typeof (a, b);\n")
-	expectPrintedMangle(t, "return delete (a, b)", "return delete (a, b);\n")
+	expectPrintedNormalAndMangle(t, "return -(a, b)", "return -(a, b);\n", "return a, -b;\n")
+	expectPrintedNormalAndMangle(t, "return +(a, b)", "return +(a, b);\n", "return a, +b;\n")
+	expectPrintedNormalAndMangle(t, "return ~(a, b)", "return ~(a, b);\n", "return a, ~b;\n")
+	expectPrintedNormalAndMangle(t, "return !(a, b)", "return !(a, b);\n", "return a, !b;\n")
+	expectPrintedNormalAndMangle(t, "return void (a, b)", "return void (a, b);\n", "return a, void b;\n")
+	expectPrintedNormalAndMangle(t, "return typeof (a, b)", "return typeof (a, b);\n", "return typeof (a, b);\n")
+	expectPrintedNormalAndMangle(t, "return delete (a, b)", "return delete (a, b);\n", "return delete (a, b);\n")
 }
 
 func TestMangleBinaryInsideComma(t *testing.T) {
-	expectPrintedMangle(t, "(a, b) && c", "a, b && c;\n")
-	expectPrintedMangle(t, "(a, b) == c", "a, b == c;\n")
-	expectPrintedMangle(t, "(a, b) + c", "a, b + c;\n")
-	expectPrintedMangle(t, "a && (b, c)", "a && (b, c);\n")
-	expectPrintedMangle(t, "a == (b, c)", "a == (b, c);\n")
-	expectPrintedMangle(t, "a + (b, c)", "a + (b, c);\n")
+	expectPrintedNormalAndMangle(t, "(a, b) && c", "(a, b) && c;\n", "a, b && c;\n")
+	expectPrintedNormalAndMangle(t, "(a, b) == c", "(a, b) == c;\n", "a, b == c;\n")
+	expectPrintedNormalAndMangle(t, "(a, b) + c", "(a, b) + c;\n", "a, b + c;\n")
+	expectPrintedNormalAndMangle(t, "a && (b, c)", "a && (b, c);\n", "a && (b, c);\n")
+	expectPrintedNormalAndMangle(t, "a == (b, c)", "a == (b, c);\n", "a == (b, c);\n")
+	expectPrintedNormalAndMangle(t, "a + (b, c)", "a + (b, c);\n", "a + (b, c);\n")
 }
 
 func TestMangleUnaryConstantFolding(t *testing.T) {
-	expectPrintedMangle(t, "x = +5", "x = 5;\n")
-	expectPrintedMangle(t, "x = -5", "x = -5;\n")
-	expectPrintedMangle(t, "x = ~5", "x = -6;\n")
-	expectPrintedMangle(t, "x = !5", "x = false;\n")
-	expectPrintedMangle(t, "x = typeof 5", "x = \"number\";\n")
+	expectPrintedNormalAndMangle(t, "x = +5", "x = 5;\n", "x = 5;\n")
+	expectPrintedNormalAndMangle(t, "x = -5", "x = -5;\n", "x = -5;\n")
+	expectPrintedNormalAndMangle(t, "x = ~5", "x = ~5;\n", "x = -6;\n")
+	expectPrintedNormalAndMangle(t, "x = !5", "x = false;\n", "x = false;\n")
+	expectPrintedNormalAndMangle(t, "x = typeof 5", "x = \"number\";\n", "x = \"number\";\n")
 }
 
 func TestMangleBinaryConstantFolding(t *testing.T) {
-	expectPrintedMangle(t, "x = 3 + 6", "x = 3 + 6;\n")
-	expectPrintedMangle(t, "x = 3 - 6", "x = 3 - 6;\n")
-	expectPrintedMangle(t, "x = 3 * 6", "x = 3 * 6;\n")
-	expectPrintedMangle(t, "x = 3 / 6", "x = 3 / 6;\n")
-	expectPrintedMangle(t, "x = 3 % 6", "x = 3 % 6;\n")
-	expectPrintedMangle(t, "x = 3 ** 6", "x = 3 ** 6;\n")
+	expectPrintedNormalAndMangle(t, "x = 3 + 6", "x = 3 + 6;\n", "x = 3 + 6;\n")
+	expectPrintedNormalAndMangle(t, "x = 3 - 6", "x = 3 - 6;\n", "x = 3 - 6;\n")
+	expectPrintedNormalAndMangle(t, "x = 3 * 6", "x = 3 * 6;\n", "x = 3 * 6;\n")
+	expectPrintedNormalAndMangle(t, "x = 3 / 6", "x = 3 / 6;\n", "x = 3 / 6;\n")
+	expectPrintedNormalAndMangle(t, "x = 3 % 6", "x = 3 % 6;\n", "x = 3 % 6;\n")
+	expectPrintedNormalAndMangle(t, "x = 3 ** 6", "x = 3 ** 6;\n", "x = 3 ** 6;\n")
 
-	expectPrintedMangle(t, "x = 3 < 6", "x = 3 < 6;\n")
-	expectPrintedMangle(t, "x = 3 > 6", "x = 3 > 6;\n")
-	expectPrintedMangle(t, "x = 3 <= 6", "x = 3 <= 6;\n")
-	expectPrintedMangle(t, "x = 3 >= 6", "x = 3 >= 6;\n")
-	expectPrintedMangle(t, "x = 3 == 6", "x = false;\n")
-	expectPrintedMangle(t, "x = 3 != 6", "x = true;\n")
-	expectPrintedMangle(t, "x = 3 === 6", "x = false;\n")
-	expectPrintedMangle(t, "x = 3 !== 6", "x = true;\n")
+	expectPrintedNormalAndMangle(t, "x = 3 < 6", "x = 3 < 6;\n", "x = 3 < 6;\n")
+	expectPrintedNormalAndMangle(t, "x = 3 > 6", "x = 3 > 6;\n", "x = 3 > 6;\n")
+	expectPrintedNormalAndMangle(t, "x = 3 <= 6", "x = 3 <= 6;\n", "x = 3 <= 6;\n")
+	expectPrintedNormalAndMangle(t, "x = 3 >= 6", "x = 3 >= 6;\n", "x = 3 >= 6;\n")
+	expectPrintedNormalAndMangle(t, "x = 3 == 6", "x = false;\n", "x = false;\n")
+	expectPrintedNormalAndMangle(t, "x = 3 != 6", "x = true;\n", "x = true;\n")
+	expectPrintedNormalAndMangle(t, "x = 3 === 6", "x = false;\n", "x = false;\n")
+	expectPrintedNormalAndMangle(t, "x = 3 !== 6", "x = true;\n", "x = true;\n")
 
-	expectPrintedMangle(t, "x = 3 in 6", "x = 3 in 6;\n")
-	expectPrintedMangle(t, "x = 3 instanceof 6", "x = 3 instanceof 6;\n")
-	expectPrintedMangle(t, "x = (3, 6)", "x = 6;\n")
+	expectPrintedNormalAndMangle(t, "x = 3 in 6", "x = 3 in 6;\n", "x = 3 in 6;\n")
+	expectPrintedNormalAndMangle(t, "x = 3 instanceof 6", "x = 3 instanceof 6;\n", "x = 3 instanceof 6;\n")
+	expectPrintedNormalAndMangle(t, "x = (3, 6)", "x = (3, 6);\n", "x = 6;\n")
 
-	expectPrintedMangle(t, "x = 10 << 1", "x = 10 << 1;\n")
-	expectPrintedMangle(t, "x = 10 >> 1", "x = 5;\n")
-	expectPrintedMangle(t, "x = 10 >>> 1", "x = 10 >>> 1;\n")
-	expectPrintedMangle(t, "x = 3 & 6", "x = 2;\n")
-	expectPrintedMangle(t, "x = 3 | 6", "x = 7;\n")
-	expectPrintedMangle(t, "x = 3 ^ 6", "x = 5;\n")
+	expectPrintedNormalAndMangle(t, "x = 10 << 1", "x = 10 << 1;\n", "x = 10 << 1;\n")
+	expectPrintedNormalAndMangle(t, "x = 10 >> 1", "x = 10 >> 1;\n", "x = 5;\n")
+	expectPrintedNormalAndMangle(t, "x = 10 >>> 1", "x = 10 >>> 1;\n", "x = 10 >>> 1;\n")
+	expectPrintedNormalAndMangle(t, "x = 3 & 6", "x = 3 & 6;\n", "x = 2;\n")
+	expectPrintedNormalAndMangle(t, "x = 3 | 6", "x = 3 | 6;\n", "x = 7;\n")
+	expectPrintedNormalAndMangle(t, "x = 3 ^ 6", "x = 3 ^ 6;\n", "x = 5;\n")
 
-	expectPrintedMangle(t, "x = 3 && 6", "x = 6;\n")
-	expectPrintedMangle(t, "x = 3 || 6", "x = 3;\n")
-	expectPrintedMangle(t, "x = 3 ?? 6", "x = 3;\n")
+	expectPrintedNormalAndMangle(t, "x = 3 && 6", "x = 6;\n", "x = 6;\n")
+	expectPrintedNormalAndMangle(t, "x = 3 || 6", "x = 3;\n", "x = 3;\n")
+	expectPrintedNormalAndMangle(t, "x = 3 ?? 6", "x = 3;\n", "x = 3;\n")
 }
 
 func TestMangleNestedLogical(t *testing.T) {
-	expectPrintedMangle(t, "(a && b) && c", "a && b && c;\n")
-	expectPrintedMangle(t, "a && (b && c)", "a && b && c;\n")
-	expectPrintedMangle(t, "(a || b) && c", "(a || b) && c;\n")
-	expectPrintedMangle(t, "a && (b || c)", "a && (b || c);\n")
+	expectPrintedNormalAndMangle(t, "(a && b) && c", "a && b && c;\n", "a && b && c;\n")
+	expectPrintedNormalAndMangle(t, "a && (b && c)", "a && (b && c);\n", "a && b && c;\n")
+	expectPrintedNormalAndMangle(t, "(a || b) && c", "(a || b) && c;\n", "(a || b) && c;\n")
+	expectPrintedNormalAndMangle(t, "a && (b || c)", "a && (b || c);\n", "a && (b || c);\n")
 
-	expectPrintedMangle(t, "(a || b) || c", "a || b || c;\n")
-	expectPrintedMangle(t, "a || (b || c)", "a || b || c;\n")
-	expectPrintedMangle(t, "(a && b) || c", "a && b || c;\n")
-	expectPrintedMangle(t, "a || (b && c)", "a || b && c;\n")
+	expectPrintedNormalAndMangle(t, "(a || b) || c", "a || b || c;\n", "a || b || c;\n")
+	expectPrintedNormalAndMangle(t, "a || (b || c)", "a || (b || c);\n", "a || b || c;\n")
+	expectPrintedNormalAndMangle(t, "(a && b) || c", "a && b || c;\n", "a && b || c;\n")
+	expectPrintedNormalAndMangle(t, "a || (b && c)", "a || b && c;\n", "a || b && c;\n")
 }
 
 func TestMangleEqualsUndefined(t *testing.T) {
-	expectPrintedMangle(t, "return a === void 0", "return a === void 0;\n")
-	expectPrintedMangle(t, "return a !== void 0", "return a !== void 0;\n")
-	expectPrintedMangle(t, "return void 0 === a", "return a === void 0;\n")
-	expectPrintedMangle(t, "return void 0 !== a", "return a !== void 0;\n")
+	expectPrintedNormalAndMangle(t, "return a === void 0", "return a === void 0;\n", "return a === void 0;\n")
+	expectPrintedNormalAndMangle(t, "return a !== void 0", "return a !== void 0;\n", "return a !== void 0;\n")
+	expectPrintedNormalAndMangle(t, "return void 0 === a", "return void 0 === a;\n", "return a === void 0;\n")
+	expectPrintedNormalAndMangle(t, "return void 0 !== a", "return void 0 !== a;\n", "return a !== void 0;\n")
 
-	expectPrintedMangle(t, "return a == void 0", "return a == null;\n")
-	expectPrintedMangle(t, "return a != void 0", "return a != null;\n")
-	expectPrintedMangle(t, "return void 0 == a", "return a == null;\n")
-	expectPrintedMangle(t, "return void 0 != a", "return a != null;\n")
+	expectPrintedNormalAndMangle(t, "return a == void 0", "return a == void 0;\n", "return a == null;\n")
+	expectPrintedNormalAndMangle(t, "return a != void 0", "return a != void 0;\n", "return a != null;\n")
+	expectPrintedNormalAndMangle(t, "return void 0 == a", "return void 0 == a;\n", "return a == null;\n")
+	expectPrintedNormalAndMangle(t, "return void 0 != a", "return void 0 != a;\n", "return a != null;\n")
 
-	expectPrintedMangle(t, "return a === null || a === undefined", "return a == null;\n")
-	expectPrintedMangle(t, "return a === null || a !== undefined", "return a === null || a !== void 0;\n")
-	expectPrintedMangle(t, "return a !== null || a === undefined", "return a !== null || a === void 0;\n")
-	expectPrintedMangle(t, "return a === null && a === undefined", "return a === null && a === void 0;\n")
-	expectPrintedMangle(t, "return a.x === null || a.x === undefined", "return a.x === null || a.x === void 0;\n")
+	expectPrintedNormalAndMangle(t, "return a === null || a === undefined", "return a === null || a === void 0;\n", "return a == null;\n")
+	expectPrintedNormalAndMangle(t, "return a === null || a !== undefined", "return a === null || a !== void 0;\n", "return a === null || a !== void 0;\n")
+	expectPrintedNormalAndMangle(t, "return a !== null || a === undefined", "return a !== null || a === void 0;\n", "return a !== null || a === void 0;\n")
+	expectPrintedNormalAndMangle(t, "return a === null && a === undefined", "return a === null && a === void 0;\n", "return a === null && a === void 0;\n")
+	expectPrintedNormalAndMangle(t, "return a.x === null || a.x === undefined", "return a.x === null || a.x === void 0;\n", "return a.x === null || a.x === void 0;\n")
 
-	expectPrintedMangle(t, "return a === undefined || a === null", "return a == null;\n")
-	expectPrintedMangle(t, "return a === undefined || a !== null", "return a === void 0 || a !== null;\n")
-	expectPrintedMangle(t, "return a !== undefined || a === null", "return a !== void 0 || a === null;\n")
-	expectPrintedMangle(t, "return a === undefined && a === null", "return a === void 0 && a === null;\n")
-	expectPrintedMangle(t, "return a.x === undefined || a.x === null", "return a.x === void 0 || a.x === null;\n")
+	expectPrintedNormalAndMangle(t, "return a === undefined || a === null", "return a === void 0 || a === null;\n", "return a == null;\n")
+	expectPrintedNormalAndMangle(t, "return a === undefined || a !== null", "return a === void 0 || a !== null;\n", "return a === void 0 || a !== null;\n")
+	expectPrintedNormalAndMangle(t, "return a !== undefined || a === null", "return a !== void 0 || a === null;\n", "return a !== void 0 || a === null;\n")
+	expectPrintedNormalAndMangle(t, "return a === undefined && a === null", "return a === void 0 && a === null;\n", "return a === void 0 && a === null;\n")
+	expectPrintedNormalAndMangle(t, "return a.x === undefined || a.x === null", "return a.x === void 0 || a.x === null;\n", "return a.x === void 0 || a.x === null;\n")
 
-	expectPrintedMangle(t, "return a !== null && a !== undefined", "return a != null;\n")
-	expectPrintedMangle(t, "return a !== null && a === undefined", "return a !== null && a === void 0;\n")
-	expectPrintedMangle(t, "return a === null && a !== undefined", "return a === null && a !== void 0;\n")
-	expectPrintedMangle(t, "return a !== null || a !== undefined", "return a !== null || a !== void 0;\n")
-	expectPrintedMangle(t, "return a.x !== null && a.x !== undefined", "return a.x !== null && a.x !== void 0;\n")
+	expectPrintedNormalAndMangle(t, "return a !== null && a !== undefined", "return a !== null && a !== void 0;\n", "return a != null;\n")
+	expectPrintedNormalAndMangle(t, "return a !== null && a === undefined", "return a !== null && a === void 0;\n", "return a !== null && a === void 0;\n")
+	expectPrintedNormalAndMangle(t, "return a === null && a !== undefined", "return a === null && a !== void 0;\n", "return a === null && a !== void 0;\n")
+	expectPrintedNormalAndMangle(t, "return a !== null || a !== undefined", "return a !== null || a !== void 0;\n", "return a !== null || a !== void 0;\n")
+	expectPrintedNormalAndMangle(t, "return a.x !== null && a.x !== undefined", "return a.x !== null && a.x !== void 0;\n", "return a.x !== null && a.x !== void 0;\n")
 
-	expectPrintedMangle(t, "return a !== undefined && a !== null", "return a != null;\n")
-	expectPrintedMangle(t, "return a !== undefined && a === null", "return a !== void 0 && a === null;\n")
-	expectPrintedMangle(t, "return a === undefined && a !== null", "return a === void 0 && a !== null;\n")
-	expectPrintedMangle(t, "return a !== undefined || a !== null", "return a !== void 0 || a !== null;\n")
-	expectPrintedMangle(t, "return a.x !== undefined && a.x !== null", "return a.x !== void 0 && a.x !== null;\n")
+	expectPrintedNormalAndMangle(t, "return a !== undefined && a !== null", "return a !== void 0 && a !== null;\n", "return a != null;\n")
+	expectPrintedNormalAndMangle(t, "return a !== undefined && a === null", "return a !== void 0 && a === null;\n", "return a !== void 0 && a === null;\n")
+	expectPrintedNormalAndMangle(t, "return a === undefined && a !== null", "return a === void 0 && a !== null;\n", "return a === void 0 && a !== null;\n")
+	expectPrintedNormalAndMangle(t, "return a !== undefined || a !== null", "return a !== void 0 || a !== null;\n", "return a !== void 0 || a !== null;\n")
+	expectPrintedNormalAndMangle(t, "return a.x !== undefined && a.x !== null", "return a.x !== void 0 && a.x !== null;\n", "return a.x !== void 0 && a.x !== null;\n")
 }
 
 func TestMangleUnusedFunctionExpressionNames(t *testing.T) {
-	expectPrintedMangle(t, "x = function y() {}", "x = function() {\n};\n")
-	expectPrintedMangle(t, "x = function y() { return y }", "x = function y() {\n  return y;\n};\n")
-	expectPrintedMangle(t, "x = function y() { return eval('y') }", "x = function y() {\n  return eval(\"y\");\n};\n")
-	expectPrintedMangle(t, "x = function y() { if (0) return y }", "x = function() {\n};\n")
+	expectPrintedNormalAndMangle(t, "x = function y() {}", "x = function y() {\n};\n", "x = function() {\n};\n")
+	expectPrintedNormalAndMangle(t, "x = function y() { return y }", "x = function y() {\n  return y;\n};\n", "x = function y() {\n  return y;\n};\n")
+	expectPrintedNormalAndMangle(t, "x = function y() { return eval('y') }", "x = function y() {\n  return eval(\"y\");\n};\n", "x = function y() {\n  return eval(\"y\");\n};\n")
+	expectPrintedNormalAndMangle(t, "x = function y() { if (0) return y }", "x = function y() {\n  if (0)\n    return y;\n};\n", "x = function() {\n};\n")
 }
 
 func TestMangleClass(t *testing.T) {
-	expectPrintedMangle(t, "class x {['y'] = z}", "class x {\n  y = z;\n}\n")
-	expectPrintedMangle(t, "class x {['y']() {}}", "class x {\n  y() {\n  }\n}\n")
-	expectPrintedMangle(t, "class x {get ['y']() {}}", "class x {\n  get y() {\n  }\n}\n")
-	expectPrintedMangle(t, "class x {set ['y'](z) {}}", "class x {\n  set y(z) {\n  }\n}\n")
-	expectPrintedMangle(t, "class x {async ['y']() {}}", "class x {\n  async y() {\n  }\n}\n")
+	expectPrintedNormalAndMangle(t, "class x {['y'] = z}", "class x {\n  [\"y\"] = z;\n}\n", "class x {\n  y = z;\n}\n")
+	expectPrintedNormalAndMangle(t, "class x {['y']() {}}", "class x {\n  [\"y\"]() {\n  }\n}\n", "class x {\n  y() {\n  }\n}\n")
+	expectPrintedNormalAndMangle(t, "class x {get ['y']() {}}", "class x {\n  get [\"y\"]() {\n  }\n}\n", "class x {\n  get y() {\n  }\n}\n")
+	expectPrintedNormalAndMangle(t, "class x {set ['y'](z) {}}", "class x {\n  set [\"y\"](z) {\n  }\n}\n", "class x {\n  set y(z) {\n  }\n}\n")
+	expectPrintedNormalAndMangle(t, "class x {async ['y']() {}}", "class x {\n  async [\"y\"]() {\n  }\n}\n", "class x {\n  async y() {\n  }\n}\n")
 
-	expectPrintedMangle(t, "x = class {['y'] = z}", "x = class {\n  y = z;\n};\n")
-	expectPrintedMangle(t, "x = class {['y']() {}}", "x = class {\n  y() {\n  }\n};\n")
-	expectPrintedMangle(t, "x = class {get ['y']() {}}", "x = class {\n  get y() {\n  }\n};\n")
-	expectPrintedMangle(t, "x = class {set ['y'](z) {}}", "x = class {\n  set y(z) {\n  }\n};\n")
-	expectPrintedMangle(t, "x = class {async ['y']() {}}", "x = class {\n  async y() {\n  }\n};\n")
+	expectPrintedNormalAndMangle(t, "x = class {['y'] = z}", "x = class {\n  [\"y\"] = z;\n};\n", "x = class {\n  y = z;\n};\n")
+	expectPrintedNormalAndMangle(t, "x = class {['y']() {}}", "x = class {\n  [\"y\"]() {\n  }\n};\n", "x = class {\n  y() {\n  }\n};\n")
+	expectPrintedNormalAndMangle(t, "x = class {get ['y']() {}}", "x = class {\n  get [\"y\"]() {\n  }\n};\n", "x = class {\n  get y() {\n  }\n};\n")
+	expectPrintedNormalAndMangle(t, "x = class {set ['y'](z) {}}", "x = class {\n  set [\"y\"](z) {\n  }\n};\n", "x = class {\n  set y(z) {\n  }\n};\n")
+	expectPrintedNormalAndMangle(t, "x = class {async ['y']() {}}", "x = class {\n  async [\"y\"]() {\n  }\n};\n", "x = class {\n  async y() {\n  }\n};\n")
 }
 
 func TestMangleUnusedClassExpressionNames(t *testing.T) {
-	expectPrintedMangle(t, "x = class y {}", "x = class {\n};\n")
-	expectPrintedMangle(t, "x = class y { foo() { return y } }", "x = class y {\n  foo() {\n    return y;\n  }\n};\n")
-	expectPrintedMangle(t, "x = class y { foo() { if (0) return y } }", "x = class {\n  foo() {\n  }\n};\n")
+	expectPrintedNormalAndMangle(t, "x = class y {}", "x = class y {\n};\n", "x = class {\n};\n")
+	expectPrintedNormalAndMangle(t, "x = class y { foo() { return y } }", "x = class y {\n  foo() {\n    return y;\n  }\n};\n", "x = class y {\n  foo() {\n    return y;\n  }\n};\n")
+	expectPrintedNormalAndMangle(t, "x = class y { foo() { if (0) return y } }", "x = class y {\n  foo() {\n    if (0)\n      return _y;\n  }\n};\n", "x = class {\n  foo() {\n  }\n};\n")
 }
 
 func TestMangleUnused(t *testing.T) {
-	expectPrintedMangle(t, "null", "")
-	expectPrintedMangle(t, "void 0", "")
-	expectPrintedMangle(t, "void 0", "")
-	expectPrintedMangle(t, "false", "")
-	expectPrintedMangle(t, "true", "")
-	expectPrintedMangle(t, "123", "")
-	expectPrintedMangle(t, "123n", "")
-	expectPrintedMangle(t, "'abc'", "")    // Technically a directive, not a string expression
-	expectPrintedMangle(t, "0; 'abc'", "") // Actually a string expression
-	expectPrintedMangle(t, "'abc'; 'use strict'", "\"use strict\";\n")
-	expectPrintedMangle(t, "function f() { 'abc'; 'use strict' }", "function f() {\n  \"use strict\";\n}\n")
-	expectPrintedMangle(t, "this", "")
-	expectPrintedMangle(t, "/regex/", "")
-	expectPrintedMangle(t, "(function() {})", "")
-	expectPrintedMangle(t, "(() => {})", "")
-	expectPrintedMangle(t, "import.meta", "")
+	expectPrintedNormalAndMangle(t, "null", "null;\n", "")
+	expectPrintedNormalAndMangle(t, "void 0", "", "")
+	expectPrintedNormalAndMangle(t, "void 0", "", "")
+	expectPrintedNormalAndMangle(t, "false", "false;\n", "")
+	expectPrintedNormalAndMangle(t, "true", "true;\n", "")
+	expectPrintedNormalAndMangle(t, "123", "123;\n", "")
+	expectPrintedNormalAndMangle(t, "123n", "123n;\n", "")
+	expectPrintedNormalAndMangle(t, "'abc'", "\"abc\";\n", "")        // Technically a directive, not a string expression
+	expectPrintedNormalAndMangle(t, "0; 'abc'", "0;\n\"abc\";\n", "") // Actually a string expression
+	expectPrintedNormalAndMangle(t, "'abc'; 'use strict'", "\"use strict\";\n\"abc\";\n", "\"use strict\";\n")
+	expectPrintedNormalAndMangle(t, "function f() { 'abc'; 'use strict' }", "function f() {\n  \"abc\";\n  \"use strict\";\n}\n", "function f() {\n  \"use strict\";\n}\n")
+	expectPrintedNormalAndMangle(t, "this", "this;\n", "")
+	expectPrintedNormalAndMangle(t, "/regex/", "/regex/;\n", "")
+	expectPrintedNormalAndMangle(t, "(function() {})", "(function() {\n});\n", "")
+	expectPrintedNormalAndMangle(t, "(() => {})", "() => {\n};\n", "")
+	expectPrintedNormalAndMangle(t, "import.meta", "import.meta;\n", "")
 
 	// Unary operators
-	expectPrintedMangle(t, "+x", "+x;\n")
-	expectPrintedMangle(t, "-x", "-x;\n")
-	expectPrintedMangle(t, "!x", "x;\n")
-	expectPrintedMangle(t, "~x", "~x;\n")
-	expectPrintedMangle(t, "++x", "++x;\n")
-	expectPrintedMangle(t, "--x", "--x;\n")
-	expectPrintedMangle(t, "x++", "x++;\n")
-	expectPrintedMangle(t, "x--", "x--;\n")
-	expectPrintedMangle(t, "void x", "x;\n")
-	expectPrintedMangle(t, "delete x", "delete x;\n")
-	expectPrintedMangle(t, "typeof x", "")
-	expectPrintedMangle(t, "typeof x()", "x();\n")
-	expectPrintedMangle(t, "typeof (0, x)", "x;\n")
-	expectPrintedMangle(t, "typeof (0 || x)", "x;\n")
-	expectPrintedMangle(t, "typeof (1 && x)", "x;\n")
-	expectPrintedMangle(t, "typeof (1 ? x : 0)", "x;\n")
-	expectPrintedMangle(t, "typeof (0 ? 1 : x)", "x;\n")
+	expectPrintedNormalAndMangle(t, "+x", "+x;\n", "+x;\n")
+	expectPrintedNormalAndMangle(t, "-x", "-x;\n", "-x;\n")
+	expectPrintedNormalAndMangle(t, "!x", "!x;\n", "x;\n")
+	expectPrintedNormalAndMangle(t, "~x", "~x;\n", "~x;\n")
+	expectPrintedNormalAndMangle(t, "++x", "++x;\n", "++x;\n")
+	expectPrintedNormalAndMangle(t, "--x", "--x;\n", "--x;\n")
+	expectPrintedNormalAndMangle(t, "x++", "x++;\n", "x++;\n")
+	expectPrintedNormalAndMangle(t, "x--", "x--;\n", "x--;\n")
+	expectPrintedNormalAndMangle(t, "void x", "void x;\n", "x;\n")
+	expectPrintedNormalAndMangle(t, "delete x", "delete x;\n", "delete x;\n")
+	expectPrintedNormalAndMangle(t, "typeof x", "typeof x;\n", "")
+	expectPrintedNormalAndMangle(t, "typeof x()", "typeof x();\n", "x();\n")
+	expectPrintedNormalAndMangle(t, "typeof (0, x)", "typeof (0, x);\n", "x;\n")
+	expectPrintedNormalAndMangle(t, "typeof (0 || x)", "typeof (0, x);\n", "x;\n")
+	expectPrintedNormalAndMangle(t, "typeof (1 && x)", "typeof (0, x);\n", "x;\n")
+	expectPrintedNormalAndMangle(t, "typeof (1 ? x : 0)", "typeof (1 ? x : 0);\n", "x;\n")
+	expectPrintedNormalAndMangle(t, "typeof (0 ? 1 : x)", "typeof (0 ? 1 : x);\n", "x;\n")
 
 	// Binary operators
-	expectPrintedMangle(t, "a + b", "a + b;\n")
-	expectPrintedMangle(t, "a - b", "a - b;\n")
-	expectPrintedMangle(t, "a * b", "a * b;\n")
-	expectPrintedMangle(t, "a / b", "a / b;\n")
-	expectPrintedMangle(t, "a % b", "a % b;\n")
-	expectPrintedMangle(t, "a ** b", "a ** b;\n")
-	expectPrintedMangle(t, "a & b", "a & b;\n")
-	expectPrintedMangle(t, "a | b", "a | b;\n")
-	expectPrintedMangle(t, "a ^ b", "a ^ b;\n")
-	expectPrintedMangle(t, "a << b", "a << b;\n")
-	expectPrintedMangle(t, "a >> b", "a >> b;\n")
-	expectPrintedMangle(t, "a >>> b", "a >>> b;\n")
-	expectPrintedMangle(t, "a === b", "a, b;\n")
-	expectPrintedMangle(t, "a !== b", "a, b;\n")
-	expectPrintedMangle(t, "a == b", "a == b;\n")
-	expectPrintedMangle(t, "a != b", "a != b;\n")
-	expectPrintedMangle(t, "a, b", "a, b;\n")
+	expectPrintedNormalAndMangle(t, "a + b", "a + b;\n", "a + b;\n")
+	expectPrintedNormalAndMangle(t, "a - b", "a - b;\n", "a - b;\n")
+	expectPrintedNormalAndMangle(t, "a * b", "a * b;\n", "a * b;\n")
+	expectPrintedNormalAndMangle(t, "a / b", "a / b;\n", "a / b;\n")
+	expectPrintedNormalAndMangle(t, "a % b", "a % b;\n", "a % b;\n")
+	expectPrintedNormalAndMangle(t, "a ** b", "a ** b;\n", "a ** b;\n")
+	expectPrintedNormalAndMangle(t, "a & b", "a & b;\n", "a & b;\n")
+	expectPrintedNormalAndMangle(t, "a | b", "a | b;\n", "a | b;\n")
+	expectPrintedNormalAndMangle(t, "a ^ b", "a ^ b;\n", "a ^ b;\n")
+	expectPrintedNormalAndMangle(t, "a << b", "a << b;\n", "a << b;\n")
+	expectPrintedNormalAndMangle(t, "a >> b", "a >> b;\n", "a >> b;\n")
+	expectPrintedNormalAndMangle(t, "a >>> b", "a >>> b;\n", "a >>> b;\n")
+	expectPrintedNormalAndMangle(t, "a === b", "a === b;\n", "a, b;\n")
+	expectPrintedNormalAndMangle(t, "a !== b", "a !== b;\n", "a, b;\n")
+	expectPrintedNormalAndMangle(t, "a == b", "a == b;\n", "a == b;\n")
+	expectPrintedNormalAndMangle(t, "a != b", "a != b;\n", "a != b;\n")
+	expectPrintedNormalAndMangle(t, "a, b", "a, b;\n", "a, b;\n")
 
-	expectPrintedMangle(t, "a + '' == b", "a + \"\" == b;\n")
-	expectPrintedMangle(t, "a + '' != b", "a + \"\" != b;\n")
-	expectPrintedMangle(t, "a + '' == b + ''", "a + \"\", b + \"\";\n")
-	expectPrintedMangle(t, "a + '' != b + ''", "a + \"\", b + \"\";\n")
-	expectPrintedMangle(t, "typeof a == b + ''", "b + \"\";\n")
-	expectPrintedMangle(t, "typeof a != b + ''", "b + \"\";\n")
-	expectPrintedMangle(t, "typeof a == 'b'", "")
-	expectPrintedMangle(t, "typeof a != 'b'", "")
+	expectPrintedNormalAndMangle(t, "a + '' == b", "a + \"\" == b;\n", "a + \"\" == b;\n")
+	expectPrintedNormalAndMangle(t, "a + '' != b", "a + \"\" != b;\n", "a + \"\" != b;\n")
+	expectPrintedNormalAndMangle(t, "a + '' == b + ''", "a + \"\" == b + \"\";\n", "a + \"\", b + \"\";\n")
+	expectPrintedNormalAndMangle(t, "a + '' != b + ''", "a + \"\" != b + \"\";\n", "a + \"\", b + \"\";\n")
+	expectPrintedNormalAndMangle(t, "typeof a == b + ''", "typeof a == b + \"\";\n", "b + \"\";\n")
+	expectPrintedNormalAndMangle(t, "typeof a != b + ''", "typeof a != b + \"\";\n", "b + \"\";\n")
+	expectPrintedNormalAndMangle(t, "typeof a == 'b'", "typeof a == \"b\";\n", "")
+	expectPrintedNormalAndMangle(t, "typeof a != 'b'", "typeof a != \"b\";\n", "")
 
 	// Known globals can be removed
-	expectPrintedMangle(t, "Object", "")
-	expectPrintedMangle(t, "Object()", "Object();\n")
-	expectPrintedMangle(t, "NonObject", "NonObject;\n")
+	expectPrintedNormalAndMangle(t, "Object", "Object;\n", "")
+	expectPrintedNormalAndMangle(t, "Object()", "Object();\n", "Object();\n")
+	expectPrintedNormalAndMangle(t, "NonObject", "NonObject;\n", "NonObject;\n")
 
-	expectPrintedMangle(t, "var bound; unbound", "var bound;\nunbound;\n")
-	expectPrintedMangle(t, "var bound; bound", "var bound;\n")
-	expectPrintedMangle(t, "foo, 123, bar", "foo, bar;\n")
+	expectPrintedNormalAndMangle(t, "var bound; unbound", "var bound;\nunbound;\n", "var bound;\nunbound;\n")
+	expectPrintedNormalAndMangle(t, "var bound; bound", "var bound;\nbound;\n", "var bound;\n")
+	expectPrintedNormalAndMangle(t, "foo, 123, bar", "foo, 123, bar;\n", "foo, bar;\n")
 
-	expectPrintedMangle(t, "[[foo,, 123,, bar]]", "foo, bar;\n")
-	expectPrintedMangle(t, "var bound; [123, unbound, ...unbound, 234]", "var bound;\n[unbound, ...unbound];\n")
-	expectPrintedMangle(t, "var bound; [123, bound, ...bound, 234]", "var bound;\n[...bound];\n")
+	expectPrintedNormalAndMangle(t, "[[foo,, 123,, bar]]", "[[foo, , 123, , bar]];\n", "foo, bar;\n")
+	expectPrintedNormalAndMangle(t, "var bound; [123, unbound, ...unbound, 234]", "var bound;\n[123, unbound, ...unbound, 234];\n", "var bound;\n[unbound, ...unbound];\n")
+	expectPrintedNormalAndMangle(t, "var bound; [123, bound, ...bound, 234]", "var bound;\n[123, bound, ...bound, 234];\n", "var bound;\n[...bound];\n")
 
-	expectPrintedMangle(t, "({foo, x: 123, [y]: 123, z: z, bar})", "foo, y + \"\", z, bar;\n")
-	expectPrintedMangle(t, "var bound; ({x: 123, unbound, ...unbound, [unbound]: null, y: 234})", "var bound;\n({ unbound, ...unbound, [unbound]: 0 });\n")
-	expectPrintedMangle(t, "var bound; ({x: 123, bound, ...bound, [bound]: null, y: 234})", "var bound;\n({ ...bound, [bound]: 0 });\n")
-	expectPrintedMangle(t, "var bound; ({x: 123, bound, ...bound, [bound]: foo(), y: 234})", "var bound;\n({ ...bound, [bound]: foo() });\n")
+	expectPrintedNormalAndMangle(t,
+		"({foo, x: 123, [y]: 123, z: z, bar})",
+		"({ foo, x: 123, [y]: 123, z, bar });\n",
+		"foo, y + \"\", z, bar;\n")
+	expectPrintedNormalAndMangle(t,
+		"var bound; ({x: 123, unbound, ...unbound, [unbound]: null, y: 234})",
+		"var bound;\n({ x: 123, unbound, ...unbound, [unbound]: null, y: 234 });\n",
+		"var bound;\n({ unbound, ...unbound, [unbound]: 0 });\n")
+	expectPrintedNormalAndMangle(t,
+		"var bound; ({x: 123, bound, ...bound, [bound]: null, y: 234})",
+		"var bound;\n({ x: 123, bound, ...bound, [bound]: null, y: 234 });\n",
+		"var bound;\n({ ...bound, [bound]: 0 });\n")
+	expectPrintedNormalAndMangle(t,
+		"var bound; ({x: 123, bound, ...bound, [bound]: foo(), y: 234})",
+		"var bound;\n({ x: 123, bound, ...bound, [bound]: foo(), y: 234 });\n",
+		"var bound;\n({ ...bound, [bound]: foo() });\n")
 
-	expectPrintedMangle(t, "console.log(1, foo(), bar())", "console.log(1, foo(), bar());\n")
-	expectPrintedMangle(t, "/* @__PURE__ */ console.log(1, foo(), bar())", "foo(), bar();\n")
+	expectPrintedNormalAndMangle(t, "console.log(1, foo(), bar())", "console.log(1, foo(), bar());\n", "console.log(1, foo(), bar());\n")
+	expectPrintedNormalAndMangle(t, "/* @__PURE__ */ console.log(1, foo(), bar())", "/* @__PURE__ */ console.log(1, foo(), bar());\n", "foo(), bar();\n")
 
-	expectPrintedMangle(t, "new TestCase(1, foo(), bar())", "new TestCase(1, foo(), bar());\n")
-	expectPrintedMangle(t, "/* @__PURE__ */ new TestCase(1, foo(), bar())", "foo(), bar();\n")
+	expectPrintedNormalAndMangle(t, "new TestCase(1, foo(), bar())", "new TestCase(1, foo(), bar());\n", "new TestCase(1, foo(), bar());\n")
+	expectPrintedNormalAndMangle(t, "/* @__PURE__ */ new TestCase(1, foo(), bar())", "/* @__PURE__ */ new TestCase(1, foo(), bar());\n", "foo(), bar();\n")
 
-	expectPrintedMangle(t, "let x = (1, 2)", "let x = 2;\n")
-	expectPrintedMangle(t, "let x = (y, 2)", "let x = (y, 2);\n")
-	expectPrintedMangle(t, "let x = (/* @__PURE__ */ foo(bar), 2)", "let x = (bar, 2);\n")
+	expectPrintedNormalAndMangle(t, "let x = (1, 2)", "let x = (1, 2);\n", "let x = 2;\n")
+	expectPrintedNormalAndMangle(t, "let x = (y, 2)", "let x = (y, 2);\n", "let x = (y, 2);\n")
+	expectPrintedNormalAndMangle(t, "let x = (/* @__PURE__ */ foo(bar), 2)", "let x = (/* @__PURE__ */ foo(bar), 2);\n", "let x = (bar, 2);\n")
 
-	expectPrintedMangle(t, "let x = (2, y)", "let x = y;\n")
-	expectPrintedMangle(t, "let x = (2, y)()", "let x = y();\n")
-	expectPrintedMangle(t, "let x = (true && y)()", "let x = y();\n")
-	expectPrintedMangle(t, "let x = (false || y)()", "let x = y();\n")
-	expectPrintedMangle(t, "let x = (null ?? y)()", "let x = y();\n")
-	expectPrintedMangle(t, "let x = (1 ? y : 2)()", "let x = y();\n")
-	expectPrintedMangle(t, "let x = (0 ? 1 : y)()", "let x = y();\n")
+	expectPrintedNormalAndMangle(t, "let x = (2, y)", "let x = (2, y);\n", "let x = y;\n")
+	expectPrintedNormalAndMangle(t, "let x = (2, y)()", "let x = (2, y)();\n", "let x = y();\n")
+	expectPrintedNormalAndMangle(t, "let x = (true && y)()", "let x = y();\n", "let x = y();\n")
+	expectPrintedNormalAndMangle(t, "let x = (false || y)()", "let x = y();\n", "let x = y();\n")
+	expectPrintedNormalAndMangle(t, "let x = (null ?? y)()", "let x = y();\n", "let x = y();\n")
+	expectPrintedNormalAndMangle(t, "let x = (1 ? y : 2)()", "let x = (1 ? y : 2)();\n", "let x = y();\n")
+	expectPrintedNormalAndMangle(t, "let x = (0 ? 1 : y)()", "let x = (0 ? 1 : y)();\n", "let x = y();\n")
 
 	// Make sure call targets with "this" values are preserved
-	expectPrintedMangle(t, "let x = (2, y.z)", "let x = y.z;\n")
-	expectPrintedMangle(t, "let x = (2, y.z)()", "let x = (0, y.z)();\n")
-	expectPrintedMangle(t, "let x = (true && y.z)()", "let x = (0, y.z)();\n")
-	expectPrintedMangle(t, "let x = (false || y.z)()", "let x = (0, y.z)();\n")
-	expectPrintedMangle(t, "let x = (null ?? y.z)()", "let x = (0, y.z)();\n")
-	expectPrintedMangle(t, "let x = (1 ? y.z : 2)()", "let x = (0, y.z)();\n")
-	expectPrintedMangle(t, "let x = (0 ? 1 : y.z)()", "let x = (0, y.z)();\n")
+	expectPrintedNormalAndMangle(t, "let x = (2, y.z)", "let x = (2, y.z);\n", "let x = y.z;\n")
+	expectPrintedNormalAndMangle(t, "let x = (2, y.z)()", "let x = (2, y.z)();\n", "let x = (0, y.z)();\n")
+	expectPrintedNormalAndMangle(t, "let x = (true && y.z)()", "let x = (0, y.z)();\n", "let x = (0, y.z)();\n")
+	expectPrintedNormalAndMangle(t, "let x = (false || y.z)()", "let x = (0, y.z)();\n", "let x = (0, y.z)();\n")
+	expectPrintedNormalAndMangle(t, "let x = (null ?? y.z)()", "let x = (0, y.z)();\n", "let x = (0, y.z)();\n")
+	expectPrintedNormalAndMangle(t, "let x = (1 ? y.z : 2)()", "let x = (1 ? y.z : 2)();\n", "let x = (0, y.z)();\n")
+	expectPrintedNormalAndMangle(t, "let x = (0 ? 1 : y.z)()", "let x = (0 ? 1 : y.z)();\n", "let x = (0, y.z)();\n")
 
-	expectPrintedMangle(t, "let x = (2, y[z])", "let x = y[z];\n")
-	expectPrintedMangle(t, "let x = (2, y[z])()", "let x = (0, y[z])();\n")
-	expectPrintedMangle(t, "let x = (true && y[z])()", "let x = (0, y[z])();\n")
-	expectPrintedMangle(t, "let x = (false || y[z])()", "let x = (0, y[z])();\n")
-	expectPrintedMangle(t, "let x = (null ?? y[z])()", "let x = (0, y[z])();\n")
-	expectPrintedMangle(t, "let x = (1 ? y[z] : 2)()", "let x = (0, y[z])();\n")
-	expectPrintedMangle(t, "let x = (0 ? 1 : y[z])()", "let x = (0, y[z])();\n")
+	expectPrintedNormalAndMangle(t, "let x = (2, y[z])", "let x = (2, y[z]);\n", "let x = y[z];\n")
+	expectPrintedNormalAndMangle(t, "let x = (2, y[z])()", "let x = (2, y[z])();\n", "let x = (0, y[z])();\n")
+	expectPrintedNormalAndMangle(t, "let x = (true && y[z])()", "let x = (0, y[z])();\n", "let x = (0, y[z])();\n")
+	expectPrintedNormalAndMangle(t, "let x = (false || y[z])()", "let x = (0, y[z])();\n", "let x = (0, y[z])();\n")
+	expectPrintedNormalAndMangle(t, "let x = (null ?? y[z])()", "let x = (0, y[z])();\n", "let x = (0, y[z])();\n")
+	expectPrintedNormalAndMangle(t, "let x = (1 ? y[z] : 2)()", "let x = (1 ? y[z] : 2)();\n", "let x = (0, y[z])();\n")
+	expectPrintedNormalAndMangle(t, "let x = (0 ? 1 : y[z])()", "let x = (0 ? 1 : y[z])();\n", "let x = (0, y[z])();\n")
 
 	// Make sure the return value of "delete" is preserved
-	expectPrintedMangle(t, "delete (x)", "delete x;\n")
-	expectPrintedMangle(t, "delete (2, x)", "delete (0, x);\n")
-	expectPrintedMangle(t, "delete (true && x)", "delete (0, x);\n")
-	expectPrintedMangle(t, "delete (false || x)", "delete (0, x);\n")
-	expectPrintedMangle(t, "delete (null ?? x)", "delete (0, x);\n")
-	expectPrintedMangle(t, "delete (1 ? x : 2)", "delete (0, x);\n")
-	expectPrintedMangle(t, "delete (0 ? 1 : x)", "delete (0, x);\n")
-	expectPrintedMangle(t, "delete (1, NaN)", "delete (0, NaN);\n")
-	expectPrintedMangle(t, "delete (1, Infinity)", "delete (0, Infinity);\n")
-	expectPrintedMangle(t, "delete (1, -Infinity)", "delete -Infinity;\n")
+	expectPrintedNormalAndMangle(t, "delete (x)", "delete x;\n", "delete x;\n")
+	expectPrintedNormalAndMangle(t, "delete (x); var x", "delete x;\nvar x;\n", "delete x;\nvar x;\n")
+	expectPrintedNormalAndMangle(t, "delete (x.y)", "delete x.y;\n", "delete x.y;\n")
+	expectPrintedNormalAndMangle(t, "delete (x[y])", "delete x[y];\n", "delete x[y];\n")
+	expectPrintedNormalAndMangle(t, "delete (x?.y)", "delete x?.y;\n", "delete x?.y;\n")
+	expectPrintedNormalAndMangle(t, "delete (x?.[y])", "delete x?.[y];\n", "delete x?.[y];\n")
+	expectPrintedNormalAndMangle(t, "delete (2, x)", "delete (2, x);\n", "delete (0, x);\n")
+	expectPrintedNormalAndMangle(t, "delete (2, x); var x", "delete (2, x);\nvar x;\n", "delete (0, x);\nvar x;\n")
+	expectPrintedNormalAndMangle(t, "delete (2, x.y)", "delete (2, x.y);\n", "delete (0, x.y);\n")
+	expectPrintedNormalAndMangle(t, "delete (2, x[y])", "delete (2, x[y]);\n", "delete (0, x[y]);\n")
+	expectPrintedNormalAndMangle(t, "delete (2, x?.y)", "delete (2, x?.y);\n", "delete (0, x?.y);\n")
+	expectPrintedNormalAndMangle(t, "delete (2, x?.[y])", "delete (2, x?.[y]);\n", "delete (0, x?.[y]);\n")
+	expectPrintedNormalAndMangle(t, "delete (true && x)", "delete (0, x);\n", "delete (0, x);\n")
+	expectPrintedNormalAndMangle(t, "delete (false || x)", "delete (0, x);\n", "delete (0, x);\n")
+	expectPrintedNormalAndMangle(t, "delete (null ?? x)", "delete (0, x);\n", "delete (0, x);\n")
+	expectPrintedNormalAndMangle(t, "delete (1 ? x : 2)", "delete (1 ? x : 2);\n", "delete (0, x);\n")
+	expectPrintedNormalAndMangle(t, "delete (0 ? 1 : x)", "delete (0 ? 1 : x);\n", "delete (0, x);\n")
+	expectPrintedNormalAndMangle(t, "delete (NaN)", "delete NaN;\n", "delete NaN;\n")
+	expectPrintedNormalAndMangle(t, "delete (Infinity)", "delete Infinity;\n", "delete Infinity;\n")
+	expectPrintedNormalAndMangle(t, "delete (-Infinity)", "delete -Infinity;\n", "delete -Infinity;\n")
+	expectPrintedNormalAndMangle(t, "delete (1, NaN)", "delete (1, NaN);\n", "delete (0, NaN);\n")
+	expectPrintedNormalAndMangle(t, "delete (1, Infinity)", "delete (1, Infinity);\n", "delete (0, Infinity);\n")
+	expectPrintedNormalAndMangle(t, "delete (1, -Infinity)", "delete (1, -Infinity);\n", "delete -Infinity;\n")
 
-	expectPrintedMangle(t, "foo ? 1 : 2", "foo;\n")
-	expectPrintedMangle(t, "foo ? 1 : bar", "foo || bar;\n")
-	expectPrintedMangle(t, "foo ? bar : 2", "foo && bar;\n")
-	expectPrintedMangle(t, "foo ? bar : baz", "foo ? bar : baz;\n")
+	expectPrintedNormalAndMangle(t, "foo ? 1 : 2", "foo ? 1 : 2;\n", "foo;\n")
+	expectPrintedNormalAndMangle(t, "foo ? 1 : bar", "foo ? 1 : bar;\n", "foo || bar;\n")
+	expectPrintedNormalAndMangle(t, "foo ? bar : 2", "foo ? bar : 2;\n", "foo && bar;\n")
+	expectPrintedNormalAndMangle(t, "foo ? bar : baz", "foo ? bar : baz;\n", "foo ? bar : baz;\n")
 
 	for _, op := range []string{"&&", "||", "??"} {
-		expectPrintedMangle(t, "foo "+op+" bar", "foo "+op+" bar;\n")
-		expectPrintedMangle(t, "var foo; foo "+op+" bar", "var foo;\nfoo "+op+" bar;\n")
-		expectPrintedMangle(t, "var bar; foo "+op+" bar", "var bar;\nfoo;\n")
-		expectPrintedMangle(t, "var foo, bar; foo "+op+" bar", "var foo, bar;\n")
+		expectPrintedNormalAndMangle(t, "foo "+op+" bar", "foo "+op+" bar;\n", "foo "+op+" bar;\n")
+		expectPrintedNormalAndMangle(t, "var foo; foo "+op+" bar", "var foo;\nfoo "+op+" bar;\n", "var foo;\nfoo "+op+" bar;\n")
+		expectPrintedNormalAndMangle(t, "var bar; foo "+op+" bar", "var bar;\nfoo "+op+" bar;\n", "var bar;\nfoo;\n")
+		expectPrintedNormalAndMangle(t, "var foo, bar; foo "+op+" bar", "var foo, bar;\nfoo "+op+" bar;\n", "var foo, bar;\n")
 	}
 
-	expectPrintedMangle(t, "tag`a${b}c${d}e`", "tag`a${b}c${d}e`;\n")
-	expectPrintedMangle(t, "`a${b}c${d}e`", "`${b}${d}`;\n")
+	expectPrintedNormalAndMangle(t, "tag`a${b}c${d}e`", "tag`a${b}c${d}e`;\n", "tag`a${b}c${d}e`;\n")
+	expectPrintedNormalAndMangle(t, "`a${b}c${d}e`", "`a${b}c${d}e`;\n", "`${b}${d}`;\n")
 
 	// These can't be reduced to string addition due to "valueOf". See:
 	// https://github.com/terser/terser/issues/1128#issuecomment-994209801
-	expectPrintedMangle(t, "`stuff ${x} ${1}`", "`${x}`;\n")
-	expectPrintedMangle(t, "`stuff ${1} ${y}`", "`${y}`;\n")
-	expectPrintedMangle(t, "`stuff ${x} ${y}`", "`${x}${y}`;\n")
-	expectPrintedMangle(t, "`stuff ${x ? 1 : 2} ${y}`", "x, `${y}`;\n")
-	expectPrintedMangle(t, "`stuff ${x} ${y ? 1 : 2}`", "`${x}`, y;\n")
-	expectPrintedMangle(t, "`stuff ${x} ${y ? 1 : 2} ${z}`", "`${x}`, y, `${z}`;\n")
+	expectPrintedNormalAndMangle(t, "`stuff ${x} ${1}`", "`stuff ${x} ${1}`;\n", "`${x}`;\n")
+	expectPrintedNormalAndMangle(t, "`stuff ${1} ${y}`", "`stuff ${1} ${y}`;\n", "`${y}`;\n")
+	expectPrintedNormalAndMangle(t, "`stuff ${x} ${y}`", "`stuff ${x} ${y}`;\n", "`${x}${y}`;\n")
+	expectPrintedNormalAndMangle(t, "`stuff ${x ? 1 : 2} ${y}`", "`stuff ${x ? 1 : 2} ${y}`;\n", "x, `${y}`;\n")
+	expectPrintedNormalAndMangle(t, "`stuff ${x} ${y ? 1 : 2}`", "`stuff ${x} ${y ? 1 : 2}`;\n", "`${x}`, y;\n")
+	expectPrintedNormalAndMangle(t, "`stuff ${x} ${y ? 1 : 2} ${z}`", "`stuff ${x} ${y ? 1 : 2} ${z}`;\n", "`${x}`, y, `${z}`;\n")
 
-	expectPrintedMangle(t, "'a' + b + 'c' + d", "\"\" + b + d;\n")
-	expectPrintedMangle(t, "a + 'b' + c + 'd'", "a + \"\" + c;\n")
-	expectPrintedMangle(t, "a + b + 'c' + 'd'", "a + b + \"\";\n")
-	expectPrintedMangle(t, "'a' + 'b' + c + d", "\"\" + c + d;\n")
-	expectPrintedMangle(t, "(a + '') + (b + '')", "a + (b + \"\");\n")
+	expectPrintedNormalAndMangle(t, "'a' + b + 'c' + d", "\"a\" + b + \"c\" + d;\n", "\"\" + b + d;\n")
+	expectPrintedNormalAndMangle(t, "a + 'b' + c + 'd'", "a + \"b\" + c + \"d\";\n", "a + \"\" + c;\n")
+	expectPrintedNormalAndMangle(t, "a + b + 'c' + 'd'", "a + b + \"cd\";\n", "a + b + \"\";\n")
+	expectPrintedNormalAndMangle(t, "'a' + 'b' + c + d", "\"ab\" + c + d;\n", "\"\" + c + d;\n")
+	expectPrintedNormalAndMangle(t, "(a + '') + (b + '')", "a + (b + \"\");\n", "a + (b + \"\");\n")
 
 	// Make sure identifiers inside "with" statements are kept
-	expectPrintedMangle(t, "with (a) []", "with (a)\n  ;\n")
-	expectPrintedMangle(t, "var a; with (b) a", "var a;\nwith (b)\n  a;\n")
+	expectPrintedNormalAndMangle(t, "with (a) []", "with (a)\n  [];\n", "with (a)\n  ;\n")
+	expectPrintedNormalAndMangle(t, "var a; with (b) a", "var a;\nwith (b)\n  a;\n", "var a;\nwith (b)\n  a;\n")
 }
 
 func TestMangleInlineLocals(t *testing.T) {
@@ -4035,6 +4315,26 @@ func TestMangleInlineLocals(t *testing.T) {
 	check("let x = 1; return void x", "let x = 1;")
 	check("let x = 1; return typeof x", "return typeof 1;")
 
+	// Check substituting a side-effect free value into normal binary operators
+	check("let x = 1; return x + 2", "return 1 + 2;")
+	check("let x = 1; return 2 + x", "return 2 + 1;")
+	check("let x = 1; return x + arg0", "return 1 + arg0;")
+	check("let x = 1; return arg0 + x", "return arg0 + 1;")
+	check("let x = 1; return x + fn()", "return 1 + fn();")
+	check("let x = 1; return fn() + x", "let x = 1;\nreturn fn() + x;")
+	check("let x = 1; return x + undef", "return 1 + undef;")
+	check("let x = 1; return undef + x", "let x = 1;\nreturn undef + x;")
+
+	// Check substituting a value with side-effects into normal binary operators
+	check("let x = fn(); return x + 2", "return fn() + 2;")
+	check("let x = fn(); return 2 + x", "return 2 + fn();")
+	check("let x = fn(); return x + arg0", "return fn() + arg0;")
+	check("let x = fn(); return arg0 + x", "let x = fn();\nreturn arg0 + x;")
+	check("let x = fn(); return x + fn2()", "return fn() + fn2();")
+	check("let x = fn(); return fn2() + x", "let x = fn();\nreturn fn2() + x;")
+	check("let x = fn(); return x + undef", "return fn() + undef;")
+	check("let x = fn(); return undef + x", "let x = fn();\nreturn undef + x;")
+
 	// Cannot substitute into mutating unary operators
 	check("let x = 1; ++x", "let x = 1;\n++x;")
 	check("let x = 1; --x", "let x = 1;\n--x;")
@@ -4052,7 +4352,7 @@ func TestMangleInlineLocals(t *testing.T) {
 	check("let x = 1; arg0 += x", "arg0 += 1;")
 	check("let x = 1; arg0 ||= x", "arg0 ||= 1;")
 	check("let x = fn(); arg0 = x", "arg0 = fn();")
-	check("let x = fn(); arg0 += x", "arg0 += fn();")
+	check("let x = fn(); arg0 += x", "let x = fn();\narg0 += x;")
 	check("let x = fn(); arg0 ||= x", "let x = fn();\narg0 ||= x;")
 
 	// Cannot substitute past mutating binary operators when the left operand has side effects
@@ -4062,12 +4362,6 @@ func TestMangleInlineLocals(t *testing.T) {
 	check("let x = fn(); y.z = x", "let x = fn();\ny.z = x;")
 	check("let x = fn(); y.z += x", "let x = fn();\ny.z += x;")
 	check("let x = fn(); y.z ||= x", "let x = fn();\ny.z ||= x;")
-
-	// Cannot substitute code without side effects past non-mutating binary operators when the left operand has side effects
-	check("let x = 1; fn() + x", "let x = 1;\nfn() + x;")
-
-	// Cannot substitute code with side effects past non-mutating binary operators
-	check("let x = y(); arg0 + x", "let x = y();\narg0 + x;")
 
 	// Can substitute code without side effects into branches
 	check("let x = arg0; return x ? y : z;", "return arg0 ? y : z;")
@@ -4212,6 +4506,29 @@ func TestMangleInlineLocals(t *testing.T) {
 	expectPrintedMangleTarget(t, 2015, "(x => { let y = x; throw y ?? z })()", "((x) => {\n  let y = x;\n  throw y != null ? y : z;\n})();\n")
 	expectPrintedMangleTarget(t, 2015, "(x => { let y = x; y.z ??= z })()", "((x) => {\n  var _a;\n  let y = x;\n  (_a = y.z) != null || (y.z = z);\n})();\n")
 	expectPrintedMangleTarget(t, 2015, "(x => { let y = x; y?.z })()", "((x) => {\n  let y = x;\n  y == null || y.z;\n})();\n")
+
+	// Cannot substitute into call targets when it would change "this"
+	check("let x = arg0; x()", "arg0();")
+	check("let x = arg0; (0, x)()", "arg0();")
+	check("let x = arg0.foo; x.bar()", "arg0.foo.bar();")
+	check("let x = arg0.foo; x[bar]()", "arg0.foo[bar]();")
+	check("let x = arg0.foo; x()", "let x = arg0.foo;\nx();")
+	check("let x = arg0[foo]; x()", "let x = arg0[foo];\nx();")
+	check("let x = arg0?.foo; x()", "let x = arg0?.foo;\nx();")
+	check("let x = arg0?.[foo]; x()", "let x = arg0?.[foo];\nx();")
+	check("let x = arg0.foo; (0, x)()", "let x = arg0.foo;\nx();")
+	check("let x = arg0[foo]; (0, x)()", "let x = arg0[foo];\nx();")
+	check("let x = arg0?.foo; (0, x)()", "let x = arg0?.foo;\nx();")
+	check("let x = arg0?.[foo]; (0, x)()", "let x = arg0?.[foo];\nx();")
+
+	// Explicitly allow reordering calls that are both marked as "/* @__PURE__ */".
+	// This happens because only two expressions that are free from side-effects
+	// can be freely reordered, and marking something as "/* @__PURE__ */" tells
+	// us that it has no side effects.
+	check("let x = arg0(); arg1() + x", "let x = arg0();\narg1() + x;")
+	check("let x = arg0(); /* @__PURE__ */ arg1() + x", "let x = arg0();\n/* @__PURE__ */ arg1() + x;")
+	check("let x = /* @__PURE__ */ arg0(); arg1() + x", "let x = /* @__PURE__ */ arg0();\narg1() + x;")
+	check("let x = /* @__PURE__ */ arg0(); /* @__PURE__ */ arg1() + x", "/* @__PURE__ */ arg1() + /* @__PURE__ */ arg0();")
 }
 
 func TestTrimCodeInDeadControlFlow(t *testing.T) {
@@ -4313,7 +4630,7 @@ func TestUnicodeWhitespace(t *testing.T) {
 	// Test "js_lexer.NextInsideJSXElement()"
 	expectParseErrorJSX(t, "<x\u0008y/>", "<stdin>: ERROR: Expected \">\" but found \"\\b\"\n")
 	for _, s := range whitespace {
-		expectPrintedJSX(t, "<x"+s+"y/>", "/* @__PURE__ */ React.createElement(\"x\", {\n  y: true\n});\n")
+		expectPrintedJSX(t, "<x"+s+"y/>", "/* @__PURE__ */ React.createElement(\"x\", { y: true });\n")
 	}
 
 	// Test "js_lexer.NextJSXElementChild()"
@@ -4403,15 +4720,15 @@ func TestJSX(t *testing.T) {
 	expectPrintedJSX(t, "<a0/>", "/* @__PURE__ */ React.createElement(\"a0\", null);\n")
 	expectParseErrorJSX(t, "<0a/>", "<stdin>: ERROR: Expected identifier but found \"0\"\n")
 
-	expectPrintedJSX(t, "<a b/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: true\n});\n")
-	expectPrintedJSX(t, "<a b=\"\\\"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"\\\\\"\n});\n")
-	expectPrintedJSX(t, "<a b=\"<>\"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"<>\"\n});\n")
-	expectPrintedJSX(t, "<a b=\"&lt;&gt;\"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"<>\"\n});\n")
-	expectPrintedJSX(t, "<a b=\"&wrong;\"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"&wrong;\"\n});\n")
-	expectPrintedJSX(t, "<a b={1, 2}/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: (1, 2)\n});\n")
-	expectPrintedJSX(t, "<a b={<c/>}/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: /* @__PURE__ */ React.createElement(\"c\", null)\n});\n")
-	expectPrintedJSX(t, "<a {...props}/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  ...props\n});\n")
-	expectPrintedJSX(t, "<a b=\"🙂\"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"🙂\"\n});\n")
+	expectPrintedJSX(t, "<a b/>", "/* @__PURE__ */ React.createElement(\"a\", { b: true });\n")
+	expectPrintedJSX(t, "<a b=\"\\\"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"\\\\\" });\n")
+	expectPrintedJSX(t, "<a b=\"<>\"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"<>\" });\n")
+	expectPrintedJSX(t, "<a b=\"&lt;&gt;\"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"<>\" });\n")
+	expectPrintedJSX(t, "<a b=\"&wrong;\"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"&wrong;\" });\n")
+	expectPrintedJSX(t, "<a b={1, 2}/>", "/* @__PURE__ */ React.createElement(\"a\", { b: (1, 2) });\n")
+	expectPrintedJSX(t, "<a b={<c/>}/>", "/* @__PURE__ */ React.createElement(\"a\", { b: /* @__PURE__ */ React.createElement(\"c\", null) });\n")
+	expectPrintedJSX(t, "<a {...props}/>", "/* @__PURE__ */ React.createElement(\"a\", { ...props });\n")
+	expectPrintedJSX(t, "<a b=\"🙂\"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"🙂\" });\n")
 
 	expectPrintedJSX(t, "<a>\n</a>", "/* @__PURE__ */ React.createElement(\"a\", null);\n")
 	expectPrintedJSX(t, "<a>123</a>", "/* @__PURE__ */ React.createElement(\"a\", null, \"123\");\n")
@@ -4426,34 +4743,35 @@ func TestJSX(t *testing.T) {
 	expectPrintedJSX(t, "<a>&lt;&gt;</a>", "/* @__PURE__ */ React.createElement(\"a\", null, \"<>\");\n")
 	expectPrintedJSX(t, "<a>&wrong;</a>", "/* @__PURE__ */ React.createElement(\"a\", null, \"&wrong;\");\n")
 	expectPrintedJSX(t, "<a>🙂</a>", "/* @__PURE__ */ React.createElement(\"a\", null, \"🙂\");\n")
+	expectPrintedJSX(t, "<a>{...children}</a>", "/* @__PURE__ */ React.createElement(\"a\", null, ...children);\n")
 
 	// Note: The TypeScript compiler and Babel disagree. This matches TypeScript.
-	expectPrintedJSX(t, "<a b=\"   c\"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"   c\"\n});\n")
-	expectPrintedJSX(t, "<a b=\"   \nc\"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"   \\nc\"\n});\n")
-	expectPrintedJSX(t, "<a b=\"\n   c\"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"\\n   c\"\n});\n")
-	expectPrintedJSX(t, "<a b=\"c   \"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"c   \"\n});\n")
-	expectPrintedJSX(t, "<a b=\"c   \n\"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"c   \\n\"\n});\n")
-	expectPrintedJSX(t, "<a b=\"c\n   \"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"c\\n   \"\n});\n")
-	expectPrintedJSX(t, "<a b=\"c   d\"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"c   d\"\n});\n")
-	expectPrintedJSX(t, "<a b=\"c   \nd\"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"c   \\nd\"\n});\n")
-	expectPrintedJSX(t, "<a b=\"c\n   d\"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"c\\n   d\"\n});\n")
-	expectPrintedJSX(t, "<a b=\"   c\"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"   c\"\n});\n")
-	expectPrintedJSX(t, "<a b=\"   \nc\"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"   \\nc\"\n});\n")
-	expectPrintedJSX(t, "<a b=\"\n   c\"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"\\n   c\"\n});\n")
+	expectPrintedJSX(t, "<a b=\"   c\"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"   c\" });\n")
+	expectPrintedJSX(t, "<a b=\"   \nc\"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"   \\nc\" });\n")
+	expectPrintedJSX(t, "<a b=\"\n   c\"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"\\n   c\" });\n")
+	expectPrintedJSX(t, "<a b=\"c   \"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"c   \" });\n")
+	expectPrintedJSX(t, "<a b=\"c   \n\"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"c   \\n\" });\n")
+	expectPrintedJSX(t, "<a b=\"c\n   \"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"c\\n   \" });\n")
+	expectPrintedJSX(t, "<a b=\"c   d\"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"c   d\" });\n")
+	expectPrintedJSX(t, "<a b=\"c   \nd\"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"c   \\nd\" });\n")
+	expectPrintedJSX(t, "<a b=\"c\n   d\"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"c\\n   d\" });\n")
+	expectPrintedJSX(t, "<a b=\"   c\"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"   c\" });\n")
+	expectPrintedJSX(t, "<a b=\"   \nc\"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"   \\nc\" });\n")
+	expectPrintedJSX(t, "<a b=\"\n   c\"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"\\n   c\" });\n")
 
 	// Same test as above except with multi-byte Unicode characters
-	expectPrintedJSX(t, "<a b=\"   🙂\"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"   🙂\"\n});\n")
-	expectPrintedJSX(t, "<a b=\"   \n🙂\"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"   \\n🙂\"\n});\n")
-	expectPrintedJSX(t, "<a b=\"\n   🙂\"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"\\n   🙂\"\n});\n")
-	expectPrintedJSX(t, "<a b=\"🙂   \"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"🙂   \"\n});\n")
-	expectPrintedJSX(t, "<a b=\"🙂   \n\"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"🙂   \\n\"\n});\n")
-	expectPrintedJSX(t, "<a b=\"🙂\n   \"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"🙂\\n   \"\n});\n")
-	expectPrintedJSX(t, "<a b=\"🙂   🍕\"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"🙂   🍕\"\n});\n")
-	expectPrintedJSX(t, "<a b=\"🙂   \n🍕\"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"🙂   \\n🍕\"\n});\n")
-	expectPrintedJSX(t, "<a b=\"🙂\n   🍕\"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"🙂\\n   🍕\"\n});\n")
-	expectPrintedJSX(t, "<a b=\"   🙂\"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"   🙂\"\n});\n")
-	expectPrintedJSX(t, "<a b=\"   \n🙂\"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"   \\n🙂\"\n});\n")
-	expectPrintedJSX(t, "<a b=\"\n   🙂\"/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  b: \"\\n   🙂\"\n});\n")
+	expectPrintedJSX(t, "<a b=\"   🙂\"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"   🙂\" });\n")
+	expectPrintedJSX(t, "<a b=\"   \n🙂\"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"   \\n🙂\" });\n")
+	expectPrintedJSX(t, "<a b=\"\n   🙂\"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"\\n   🙂\" });\n")
+	expectPrintedJSX(t, "<a b=\"🙂   \"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"🙂   \" });\n")
+	expectPrintedJSX(t, "<a b=\"🙂   \n\"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"🙂   \\n\" });\n")
+	expectPrintedJSX(t, "<a b=\"🙂\n   \"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"🙂\\n   \" });\n")
+	expectPrintedJSX(t, "<a b=\"🙂   🍕\"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"🙂   🍕\" });\n")
+	expectPrintedJSX(t, "<a b=\"🙂   \n🍕\"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"🙂   \\n🍕\" });\n")
+	expectPrintedJSX(t, "<a b=\"🙂\n   🍕\"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"🙂\\n   🍕\" });\n")
+	expectPrintedJSX(t, "<a b=\"   🙂\"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"   🙂\" });\n")
+	expectPrintedJSX(t, "<a b=\"   \n🙂\"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"   \\n🙂\" });\n")
+	expectPrintedJSX(t, "<a b=\"\n   🙂\"/>", "/* @__PURE__ */ React.createElement(\"a\", { b: \"\\n   🙂\" });\n")
 
 	expectPrintedJSX(t, "<a>   b</a>", "/* @__PURE__ */ React.createElement(\"a\", null, \"   b\");\n")
 	expectPrintedJSX(t, "<a>   \nb</a>", "/* @__PURE__ */ React.createElement(\"a\", null, \"b\");\n")
@@ -4520,12 +4838,11 @@ func TestJSX(t *testing.T) {
 		"<stdin>: ERROR: Expected closing tag \"c.d\" to match opening tag \"a.b\"\n<stdin>: NOTE: The opening tag \"a.b\" is here:\n")
 	expectParseErrorJSX(t, "<a-b.c>", "<stdin>: ERROR: Expected \">\" but found \".\"\n")
 	expectParseErrorJSX(t, "<a.b-c>", "<stdin>: ERROR: Unexpected \"-\"\n")
-	expectParseErrorJSX(t, "<a>{...children}</a>", "<stdin>: ERROR: Unexpected \"...\"\n")
 
 	expectPrintedJSX(t, "< /**/ a/>", "/* @__PURE__ */ React.createElement(\"a\", null);\n")
 	expectPrintedJSX(t, "< //\n a/>", "/* @__PURE__ */ React.createElement(\"a\", null);\n")
 	expectPrintedJSX(t, "<a /**/ />", "/* @__PURE__ */ React.createElement(\"a\", null);\n")
-	expectPrintedJSX(t, "<a //\n />", "/* @__PURE__ */ React.createElement(\"a\", null);\n")
+	expectPrintedJSX(t, "<a //\n />", "/* @__PURE__ */ React.createElement(\n  \"a\",\n  null\n);\n")
 	expectPrintedJSX(t, "<a/ /**/ >", "/* @__PURE__ */ React.createElement(\"a\", null);\n")
 	expectPrintedJSX(t, "<a/ //\n >", "/* @__PURE__ */ React.createElement(\"a\", null);\n")
 
@@ -4542,7 +4859,7 @@ func TestJSX(t *testing.T) {
 	// Unicode tests
 	expectPrintedJSX(t, "<\U00020000/>", "/* @__PURE__ */ React.createElement(\U00020000, null);\n")
 	expectPrintedJSX(t, "<a>\U00020000</a>", "/* @__PURE__ */ React.createElement(\"a\", null, \"\U00020000\");\n")
-	expectPrintedJSX(t, "<a \U00020000={0}/>", "/* @__PURE__ */ React.createElement(\"a\", {\n  \"\U00020000\": 0\n});\n")
+	expectPrintedJSX(t, "<a \U00020000={0}/>", "/* @__PURE__ */ React.createElement(\"a\", { \"\U00020000\": 0 });\n")
 
 	// Comment tests
 	expectParseErrorJSX(t, "<a /* />", "<stdin>: ERROR: Expected \"*/\" to terminate multi-line comment\n<stdin>: NOTE: The multi-line comment starts here:\n")
@@ -4564,19 +4881,28 @@ func TestJSX(t *testing.T) {
 		expectPrintedJSX(t, "<a-b"+colon+"c-d/>", "/* @__PURE__ */ React.createElement(\"a-b:c-d\", null);\n")
 		expectPrintedJSX(t, "<a-"+colon+"b-/>", "/* @__PURE__ */ React.createElement(\"a-:b-\", null);\n")
 		expectPrintedJSX(t, "<Te"+colon+"st/>", "/* @__PURE__ */ React.createElement(\"Te:st\", null);\n")
-		expectPrintedJSX(t, "<x a"+colon+"b/>", "/* @__PURE__ */ React.createElement(\"x\", {\n  \"a:b\": true\n});\n")
-		expectPrintedJSX(t, "<x a-b"+colon+"c-d/>", "/* @__PURE__ */ React.createElement(\"x\", {\n  \"a-b:c-d\": true\n});\n")
-		expectPrintedJSX(t, "<x a-"+colon+"b-/>", "/* @__PURE__ */ React.createElement(\"x\", {\n  \"a-:b-\": true\n});\n")
-		expectPrintedJSX(t, "<x Te"+colon+"st/>", "/* @__PURE__ */ React.createElement(\"x\", {\n  \"Te:st\": true\n});\n")
-		expectPrintedJSX(t, "<x a"+colon+"b={0}/>", "/* @__PURE__ */ React.createElement(\"x\", {\n  \"a:b\": 0\n});\n")
-		expectPrintedJSX(t, "<x a-b"+colon+"c-d={0}/>", "/* @__PURE__ */ React.createElement(\"x\", {\n  \"a-b:c-d\": 0\n});\n")
-		expectPrintedJSX(t, "<x a-"+colon+"b-={0}/>", "/* @__PURE__ */ React.createElement(\"x\", {\n  \"a-:b-\": 0\n});\n")
-		expectPrintedJSX(t, "<x Te"+colon+"st={0}/>", "/* @__PURE__ */ React.createElement(\"x\", {\n  \"Te:st\": 0\n});\n")
-		expectPrintedJSX(t, "<a-b a-b={a-b}/>", "/* @__PURE__ */ React.createElement(\"a-b\", {\n  \"a-b\": a - b\n});\n")
+		expectPrintedJSX(t, "<x a"+colon+"b/>", "/* @__PURE__ */ React.createElement(\"x\", { \"a:b\": true });\n")
+		expectPrintedJSX(t, "<x a-b"+colon+"c-d/>", "/* @__PURE__ */ React.createElement(\"x\", { \"a-b:c-d\": true });\n")
+		expectPrintedJSX(t, "<x a-"+colon+"b-/>", "/* @__PURE__ */ React.createElement(\"x\", { \"a-:b-\": true });\n")
+		expectPrintedJSX(t, "<x Te"+colon+"st/>", "/* @__PURE__ */ React.createElement(\"x\", { \"Te:st\": true });\n")
+		expectPrintedJSX(t, "<x a"+colon+"b={0}/>", "/* @__PURE__ */ React.createElement(\"x\", { \"a:b\": 0 });\n")
+		expectPrintedJSX(t, "<x a-b"+colon+"c-d={0}/>", "/* @__PURE__ */ React.createElement(\"x\", { \"a-b:c-d\": 0 });\n")
+		expectPrintedJSX(t, "<x a-"+colon+"b-={0}/>", "/* @__PURE__ */ React.createElement(\"x\", { \"a-:b-\": 0 });\n")
+		expectPrintedJSX(t, "<x Te"+colon+"st={0}/>", "/* @__PURE__ */ React.createElement(\"x\", { \"Te:st\": 0 });\n")
+		expectPrintedJSX(t, "<a-b a-b={a-b}/>", "/* @__PURE__ */ React.createElement(\"a-b\", { \"a-b\": a - b });\n")
 		expectParseErrorJSX(t, "<x"+colon+"/>", "<stdin>: ERROR: Expected identifier after \"x:\" in namespaced JSX name\n")
 		expectParseErrorJSX(t, "<x"+colon+"y"+colon+"/>", "<stdin>: ERROR: Expected \">\" but found \":\"\n")
 		expectParseErrorJSX(t, "<x"+colon+"0y/>", "<stdin>: ERROR: Expected identifier after \"x:\" in namespaced JSX name\n")
 	}
+}
+
+func TestJSXSingleLine(t *testing.T) {
+	expectPrintedJSX(t, "<x/>", "/* @__PURE__ */ React.createElement(\"x\", null);\n")
+	expectPrintedJSX(t, "<x y/>", "/* @__PURE__ */ React.createElement(\"x\", { y: true });\n")
+	expectPrintedJSX(t, "<x\n/>", "/* @__PURE__ */ React.createElement(\n  \"x\",\n  null\n);\n")
+	expectPrintedJSX(t, "<x\ny/>", "/* @__PURE__ */ React.createElement(\n  \"x\",\n  {\n    y: true\n  }\n);\n")
+	expectPrintedJSX(t, "<x y\n/>", "/* @__PURE__ */ React.createElement(\n  \"x\",\n  {\n    y: true\n  }\n);\n")
+	expectPrintedJSX(t, "<x\n{...y}/>", "/* @__PURE__ */ React.createElement(\n  \"x\",\n  {\n    ...y\n  }\n);\n")
 }
 
 func TestJSXPragmas(t *testing.T) {
@@ -4599,6 +4925,173 @@ func TestJSXPragmas(t *testing.T) {
 	expectPrintedJSX(t, "// @jsxFrag a.b.c\n<></>", "/* @__PURE__ */ React.createElement(a.b.c, null);\n")
 	expectPrintedJSX(t, "/*@jsxFrag a.b.c*/\n<></>", "/* @__PURE__ */ React.createElement(a.b.c, null);\n")
 	expectPrintedJSX(t, "/* @jsxFrag a.b.c */\n<></>", "/* @__PURE__ */ React.createElement(a.b.c, null);\n")
+}
+
+func TestJSXAutomatic(t *testing.T) {
+	// Prod, without runtime imports
+	p := JSXAutomaticTestOptions{Development: false, OmitJSXRuntimeForTests: true}
+	expectPrintedJSXAutomatic(t, p, "<div>></div>", "/* @__PURE__ */ jsx(\"div\", { children: \">\" });\n")
+	expectPrintedJSXAutomatic(t, p, "<div>{1}}</div>", "/* @__PURE__ */ jsxs(\"div\", { children: [\n  1,\n  \"}\"\n] });\n")
+	expectPrintedJSXAutomatic(t, p, "<div key={true} />", "/* @__PURE__ */ jsx(\"div\", {}, true);\n")
+	expectPrintedJSXAutomatic(t, p, "<div key=\"key\" />", "/* @__PURE__ */ jsx(\"div\", {}, \"key\");\n")
+	expectPrintedJSXAutomatic(t, p, "<div key=\"key\" {...props} />", "/* @__PURE__ */ jsx(\"div\", { ...props }, \"key\");\n")
+	expectPrintedJSXAutomatic(t, p, "<div {...props} key=\"key\" />", "/* @__PURE__ */ createElement(\"div\", { ...props, key: \"key\" });\n") // Falls back to createElement
+	expectPrintedJSXAutomatic(t, p, "<div>{...children}</div>", "/* @__PURE__ */ jsxs(\"div\", { children: [\n  ...children\n] });\n")
+	expectPrintedJSXAutomatic(t, p, "<div>{...children}<a/></div>", "/* @__PURE__ */ jsxs(\"div\", { children: [\n  ...children,\n  /* @__PURE__ */ jsx(\"a\", {})\n] });\n")
+	expectPrintedJSXAutomatic(t, p, "<>></>", "/* @__PURE__ */ jsx(Fragment, { children: \">\" });\n")
+
+	expectParseErrorJSXAutomatic(t, p, "<a key/>",
+		`<stdin>: ERROR: Please provide an explicit value for "key":
+NOTE: Using "key" as a shorthand for "key={true}" is not allowed when using React's "automatic" JSX transform.
+`)
+	expectParseErrorJSXAutomatic(t, p, "<div __self={self} />",
+		`<stdin>: ERROR: Duplicate "__self" prop found:
+NOTE: Both "__source" and "__self" are set automatically by esbuild when using React's "automatic" JSX transform. This duplicate prop may have come from a plugin.
+`)
+	expectParseErrorJSXAutomatic(t, p, "<div __source=\"/path/to/source.jsx\" />",
+		`<stdin>: ERROR: Duplicate "__source" prop found:
+NOTE: Both "__source" and "__self" are set automatically by esbuild when using React's "automatic" JSX transform. This duplicate prop may have come from a plugin.
+`)
+
+	// Prod, with runtime imports
+	pr := JSXAutomaticTestOptions{Development: false}
+	expectPrintedJSXAutomatic(t, pr, "<div/>", "import { jsx } from \"react/jsx-runtime\";\n/* @__PURE__ */ jsx(\"div\", {});\n")
+	expectPrintedJSXAutomatic(t, pr, "<><a/><b/></>", "import { Fragment, jsx, jsxs } from \"react/jsx-runtime\";\n/* @__PURE__ */ jsxs(Fragment, { children: [\n  /* @__PURE__ */ jsx(\"a\", {}),\n  /* @__PURE__ */ jsx(\"b\", {})\n] });\n")
+	expectPrintedJSXAutomatic(t, pr, "<div {...props} key=\"key\" />", "import { createElement } from \"react\";\n/* @__PURE__ */ createElement(\"div\", { ...props, key: \"key\" });\n")
+	expectPrintedJSXAutomatic(t, pr, "<><div {...props} key=\"key\" /></>", "import { Fragment, jsx } from \"react/jsx-runtime\";\nimport { createElement } from \"react\";\n/* @__PURE__ */ jsx(Fragment, { children: /* @__PURE__ */ createElement(\"div\", { ...props, key: \"key\" }) });\n")
+
+	pri := JSXAutomaticTestOptions{Development: false, ImportSource: "my-jsx-lib"}
+	expectPrintedJSXAutomatic(t, pri, "<div/>", "import { jsx } from \"my-jsx-lib/jsx-runtime\";\n/* @__PURE__ */ jsx(\"div\", {});\n")
+	expectPrintedJSXAutomatic(t, pri, "<div {...props} key=\"key\" />", "import { createElement } from \"my-jsx-lib\";\n/* @__PURE__ */ createElement(\"div\", { ...props, key: \"key\" });\n")
+
+	// Impure JSX call expressions
+	pi := JSXAutomaticTestOptions{SideEffects: true, ImportSource: "my-jsx-lib"}
+	expectPrintedJSXAutomatic(t, pi, "<a/>", "import { jsx } from \"my-jsx-lib/jsx-runtime\";\njsx(\"a\", {});\n")
+	expectPrintedJSXAutomatic(t, pi, "<></>", "import { Fragment, jsx } from \"my-jsx-lib/jsx-runtime\";\njsx(Fragment, {});\n")
+
+	// Dev, without runtime imports
+	d := JSXAutomaticTestOptions{Development: true, OmitJSXRuntimeForTests: true}
+	expectPrintedJSXAutomatic(t, d, "<div>></div>", "/* @__PURE__ */ jsxDEV(\"div\", { children: \">\" }, void 0, false, {\n  fileName: \"<stdin>\",\n  lineNumber: 1,\n  columnNumber: 1\n}, this);\n")
+	expectPrintedJSXAutomatic(t, d, "<div>{1}}</div>", "/* @__PURE__ */ jsxDEV(\"div\", { children: [\n  1,\n  \"}\"\n] }, void 0, true, {\n  fileName: \"<stdin>\",\n  lineNumber: 1,\n  columnNumber: 1\n}, this);\n")
+	expectPrintedJSXAutomatic(t, d, "<div key={true} />", "/* @__PURE__ */ jsxDEV(\"div\", {}, true, false, {\n  fileName: \"<stdin>\",\n  lineNumber: 1,\n  columnNumber: 1\n}, this);\n")
+	expectPrintedJSXAutomatic(t, d, "<div key=\"key\" />", "/* @__PURE__ */ jsxDEV(\"div\", {}, \"key\", false, {\n  fileName: \"<stdin>\",\n  lineNumber: 1,\n  columnNumber: 1\n}, this);\n")
+	expectPrintedJSXAutomatic(t, d, "<div key=\"key\" {...props} />", "/* @__PURE__ */ jsxDEV(\"div\", { ...props }, \"key\", false, {\n  fileName: \"<stdin>\",\n  lineNumber: 1,\n  columnNumber: 1\n}, this);\n")
+	expectPrintedJSXAutomatic(t, d, "<div {...props} key=\"key\" />", "/* @__PURE__ */ createElement(\"div\", { ...props, key: \"key\" });\n") // Falls back to createElement
+	expectPrintedJSXAutomatic(t, d, "<div>{...children}</div>", "/* @__PURE__ */ jsxDEV(\"div\", { children: [\n  ...children\n] }, void 0, true, {\n  fileName: \"<stdin>\",\n  lineNumber: 1,\n  columnNumber: 1\n}, this);\n")
+	expectPrintedJSXAutomatic(t, d, "<div>\n  {...children}\n  <a/></div>", "/* @__PURE__ */ jsxDEV(\"div\", { children: [\n  ...children,\n  /* @__PURE__ */ jsxDEV(\"a\", {}, void 0, false, {\n    fileName: \"<stdin>\",\n    lineNumber: 3,\n    columnNumber: 3\n  }, this)\n] }, void 0, true, {\n  fileName: \"<stdin>\",\n  lineNumber: 1,\n  columnNumber: 1\n}, this);\n")
+	expectPrintedJSXAutomatic(t, d, "<>></>", "/* @__PURE__ */ jsxDEV(Fragment, { children: \">\" }, void 0, false, {\n  fileName: \"<stdin>\",\n  lineNumber: 1,\n  columnNumber: 1\n}, this);\n")
+
+	expectParseErrorJSXAutomatic(t, d, "<a key/>",
+		`<stdin>: ERROR: Please provide an explicit value for "key":
+NOTE: Using "key" as a shorthand for "key={true}" is not allowed when using React's "automatic" JSX transform.
+`)
+	expectParseErrorJSXAutomatic(t, d, "<div __self={self} />",
+		`<stdin>: ERROR: Duplicate "__self" prop found:
+NOTE: Both "__source" and "__self" are set automatically by esbuild when using React's "automatic" JSX transform. This duplicate prop may have come from a plugin.
+`)
+	expectParseErrorJSXAutomatic(t, d, "<div __source=\"/path/to/source.jsx\" />",
+		`<stdin>: ERROR: Duplicate "__source" prop found:
+NOTE: Both "__source" and "__self" are set automatically by esbuild when using React's "automatic" JSX transform. This duplicate prop may have come from a plugin.
+`)
+
+	// Line/column offset tests. Unlike Babel, TypeScript sometimes points to a
+	// location other than the start of the element. I'm not sure if that's a bug
+	// or not, but it seems weird. So I decided to match Babel instead.
+	expectPrintedJSXAutomatic(t, d, "\r\n<x/>", "/* @__PURE__ */ jsxDEV(\"x\", {}, void 0, false, {\n  fileName: \"<stdin>\",\n  lineNumber: 2,\n  columnNumber: 1\n}, this);\n")
+	expectPrintedJSXAutomatic(t, d, "\n\r<x/>", "/* @__PURE__ */ jsxDEV(\"x\", {}, void 0, false, {\n  fileName: \"<stdin>\",\n  lineNumber: 3,\n  columnNumber: 1\n}, this);\n")
+	expectPrintedJSXAutomatic(t, d, "let 𐀀 = <x>🍕🍕🍕<y/></x>", "let 𐀀 = /* @__PURE__ */ jsxDEV(\"x\", { children: [\n  \"🍕🍕🍕\",\n  /* @__PURE__ */ jsxDEV(\"y\", {}, void 0, false, {\n    fileName: \"<stdin>\",\n    lineNumber: 1,\n    columnNumber: 19\n  }, this)\n] }, void 0, true, {\n  fileName: \"<stdin>\",\n  lineNumber: 1,\n  columnNumber: 10\n}, this);\n")
+
+	// Dev, with runtime imports
+	dr := JSXAutomaticTestOptions{Development: true}
+	expectPrintedJSXAutomatic(t, dr, "<div/>", "import { jsxDEV } from \"react/jsx-dev-runtime\";\n/* @__PURE__ */ jsxDEV(\"div\", {}, void 0, false, {\n  fileName: \"<stdin>\",\n  lineNumber: 1,\n  columnNumber: 1\n}, this);\n")
+	expectPrintedJSXAutomatic(t, dr, "<>\n  <a/>\n  <b/>\n</>", "import { Fragment, jsxDEV } from \"react/jsx-dev-runtime\";\n/* @__PURE__ */ jsxDEV(Fragment, { children: [\n  /* @__PURE__ */ jsxDEV(\"a\", {}, void 0, false, {\n    fileName: \"<stdin>\",\n    lineNumber: 2,\n    columnNumber: 3\n  }, this),\n  /* @__PURE__ */ jsxDEV(\"b\", {}, void 0, false, {\n    fileName: \"<stdin>\",\n    lineNumber: 3,\n    columnNumber: 3\n  }, this)\n] }, void 0, true, {\n  fileName: \"<stdin>\",\n  lineNumber: 1,\n  columnNumber: 1\n}, this);\n")
+
+	dri := JSXAutomaticTestOptions{Development: true, ImportSource: "preact"}
+	expectPrintedJSXAutomatic(t, dri, "<div/>", "import { jsxDEV } from \"preact/jsx-dev-runtime\";\n/* @__PURE__ */ jsxDEV(\"div\", {}, void 0, false, {\n  fileName: \"<stdin>\",\n  lineNumber: 1,\n  columnNumber: 1\n}, this);\n")
+	expectPrintedJSXAutomatic(t, dri, "<>\n  <a/>\n  <b/>\n</>", "import { Fragment, jsxDEV } from \"preact/jsx-dev-runtime\";\n/* @__PURE__ */ jsxDEV(Fragment, { children: [\n  /* @__PURE__ */ jsxDEV(\"a\", {}, void 0, false, {\n    fileName: \"<stdin>\",\n    lineNumber: 2,\n    columnNumber: 3\n  }, this),\n  /* @__PURE__ */ jsxDEV(\"b\", {}, void 0, false, {\n    fileName: \"<stdin>\",\n    lineNumber: 3,\n    columnNumber: 3\n  }, this)\n] }, void 0, true, {\n  fileName: \"<stdin>\",\n  lineNumber: 1,\n  columnNumber: 1\n}, this);\n")
+
+	// JSX namespaced names
+	for _, colon := range []string{":", " :", ": ", " : "} {
+		expectPrintedJSXAutomatic(t, p, "<a"+colon+"b/>", "/* @__PURE__ */ jsx(\"a:b\", {});\n")
+		expectPrintedJSXAutomatic(t, p, "<a-b"+colon+"c-d/>", "/* @__PURE__ */ jsx(\"a-b:c-d\", {});\n")
+		expectPrintedJSXAutomatic(t, p, "<a-"+colon+"b-/>", "/* @__PURE__ */ jsx(\"a-:b-\", {});\n")
+		expectPrintedJSXAutomatic(t, p, "<Te"+colon+"st/>", "/* @__PURE__ */ jsx(\"Te:st\", {});\n")
+		expectPrintedJSXAutomatic(t, p, "<x a"+colon+"b/>", "/* @__PURE__ */ jsx(\"x\", { \"a:b\": true });\n")
+		expectPrintedJSXAutomatic(t, p, "<x a-b"+colon+"c-d/>", "/* @__PURE__ */ jsx(\"x\", { \"a-b:c-d\": true });\n")
+		expectPrintedJSXAutomatic(t, p, "<x a-"+colon+"b-/>", "/* @__PURE__ */ jsx(\"x\", { \"a-:b-\": true });\n")
+		expectPrintedJSXAutomatic(t, p, "<x Te"+colon+"st/>", "/* @__PURE__ */ jsx(\"x\", { \"Te:st\": true });\n")
+		expectPrintedJSXAutomatic(t, p, "<x a"+colon+"b={0}/>", "/* @__PURE__ */ jsx(\"x\", { \"a:b\": 0 });\n")
+		expectPrintedJSXAutomatic(t, p, "<x a-b"+colon+"c-d={0}/>", "/* @__PURE__ */ jsx(\"x\", { \"a-b:c-d\": 0 });\n")
+		expectPrintedJSXAutomatic(t, p, "<x a-"+colon+"b-={0}/>", "/* @__PURE__ */ jsx(\"x\", { \"a-:b-\": 0 });\n")
+		expectPrintedJSXAutomatic(t, p, "<x Te"+colon+"st={0}/>", "/* @__PURE__ */ jsx(\"x\", { \"Te:st\": 0 });\n")
+		expectPrintedJSXAutomatic(t, p, "<a-b a-b={a-b}/>", "/* @__PURE__ */ jsx(\"a-b\", { \"a-b\": a - b });\n")
+		expectParseErrorJSXAutomatic(t, p, "<x"+colon+"/>", "<stdin>: ERROR: Expected identifier after \"x:\" in namespaced JSX name\n")
+		expectParseErrorJSXAutomatic(t, p, "<x"+colon+"y"+colon+"/>", "<stdin>: ERROR: Expected \">\" but found \":\"\n")
+		expectParseErrorJSXAutomatic(t, p, "<x"+colon+"0y/>", "<stdin>: ERROR: Expected identifier after \"x:\" in namespaced JSX name\n")
+	}
+
+	// Enabling the "automatic" runtime means that any JSX element will cause the
+	// file to be implicitly in strict mode due to the automatically-generated
+	// import statement. This is the same behavior as the TypeScript compiler.
+	strictModeError := "<stdin>: ERROR: With statements cannot be used in strict mode\n" +
+		"<stdin>: NOTE: This file is implicitly in strict mode due to the JSX element here:\n" +
+		"NOTE: When React's \"automatic\" JSX transform is enabled, using a JSX element automatically inserts an \"import\" statement at the top of the file " +
+		"for the corresponding the JSX helper function. This means the file is considered an ECMAScript module, and all ECMAScript modules use strict mode.\n"
+	expectPrintedJSX(t, "with (x) y(<z/>)", "with (x)\n  y(/* @__PURE__ */ React.createElement(\"z\", null));\n")
+	expectPrintedJSXAutomatic(t, p, "with (x) y", "with (x)\n  y;\n")
+	expectParseErrorJSX(t, "with (x) y(<z/>) // @jsxRuntime automatic", strictModeError)
+	expectParseErrorJSXAutomatic(t, p, "with (x) y(<z/>)", strictModeError)
+}
+
+func TestJSXAutomaticPragmas(t *testing.T) {
+	expectPrintedJSX(t, "// @jsxRuntime automatic\n<a/>", "import { jsx } from \"react/jsx-runtime\";\n/* @__PURE__ */ jsx(\"a\", {});\n")
+	expectPrintedJSX(t, "/*@jsxRuntime automatic*/\n<a/>", "import { jsx } from \"react/jsx-runtime\";\n/* @__PURE__ */ jsx(\"a\", {});\n")
+	expectPrintedJSX(t, "/* @jsxRuntime automatic */\n<a/>", "import { jsx } from \"react/jsx-runtime\";\n/* @__PURE__ */ jsx(\"a\", {});\n")
+	expectPrintedJSX(t, "<a/>\n/*@jsxRuntime automatic*/", "import { jsx } from \"react/jsx-runtime\";\n/* @__PURE__ */ jsx(\"a\", {});\n")
+	expectPrintedJSX(t, "<a/>\n/* @jsxRuntime automatic */", "import { jsx } from \"react/jsx-runtime\";\n/* @__PURE__ */ jsx(\"a\", {});\n")
+
+	expectPrintedJSX(t, "// @jsxRuntime classic\n<a/>", "/* @__PURE__ */ React.createElement(\"a\", null);\n")
+	expectPrintedJSX(t, "/*@jsxRuntime classic*/\n<a/>", "/* @__PURE__ */ React.createElement(\"a\", null);\n")
+	expectPrintedJSX(t, "/* @jsxRuntime classic */\n<a/>", "/* @__PURE__ */ React.createElement(\"a\", null);\n")
+	expectPrintedJSX(t, "<a/>\n/*@jsxRuntime classic*/\n", "/* @__PURE__ */ React.createElement(\"a\", null);\n")
+	expectPrintedJSX(t, "<a/>\n/* @jsxRuntime classic */\n", "/* @__PURE__ */ React.createElement(\"a\", null);\n")
+
+	expectParseErrorJSX(t, "// @jsxRuntime foo\n<a/>",
+		`<stdin>: WARNING: Invalid JSX runtime: "foo"
+NOTE: The JSX runtime can only be set to either "classic" or "automatic".
+`)
+
+	expectPrintedJSX(t, "// @jsxRuntime automatic @jsxImportSource src\n<a/>", "import { jsx } from \"src/jsx-runtime\";\n/* @__PURE__ */ jsx(\"a\", {});\n")
+	expectPrintedJSX(t, "/*@jsxRuntime automatic @jsxImportSource src*/\n<a/>", "import { jsx } from \"src/jsx-runtime\";\n/* @__PURE__ */ jsx(\"a\", {});\n")
+	expectPrintedJSX(t, "/*@jsxRuntime automatic*//*@jsxImportSource src*/\n<a/>", "import { jsx } from \"src/jsx-runtime\";\n/* @__PURE__ */ jsx(\"a\", {});\n")
+	expectPrintedJSX(t, "/* @jsxRuntime automatic */\n/* @jsxImportSource src */\n<a/>", "import { jsx } from \"src/jsx-runtime\";\n/* @__PURE__ */ jsx(\"a\", {});\n")
+	expectPrintedJSX(t, "<a/>\n/*@jsxRuntime automatic @jsxImportSource src*/", "import { jsx } from \"src/jsx-runtime\";\n/* @__PURE__ */ jsx(\"a\", {});\n")
+	expectPrintedJSX(t, "<a/>\n/*@jsxRuntime automatic*/\n/*@jsxImportSource src*/", "import { jsx } from \"src/jsx-runtime\";\n/* @__PURE__ */ jsx(\"a\", {});\n")
+	expectPrintedJSX(t, "<a/>\n/* @jsxRuntime automatic */\n/* @jsxImportSource src */", "import { jsx } from \"src/jsx-runtime\";\n/* @__PURE__ */ jsx(\"a\", {});\n")
+
+	expectPrintedJSX(t, "// @jsxRuntime classic @jsxImportSource src\n<a/>", "/* @__PURE__ */ React.createElement(\"a\", null);\n")
+	expectParseErrorJSX(t, "// @jsxRuntime classic @jsxImportSource src\n<a/>",
+		`<stdin>: WARNING: The JSX import source cannot be set without also enabling React's "automatic" JSX transform
+NOTE: You can enable React's "automatic" JSX transform for this file by using a "@jsxRuntime automatic" comment.
+`)
+	expectParseErrorJSX(t, "// @jsxImportSource src\n<a/>",
+		`<stdin>: WARNING: The JSX import source cannot be set without also enabling React's "automatic" JSX transform
+NOTE: You can enable React's "automatic" JSX transform for this file by using a "@jsxRuntime automatic" comment.
+`)
+
+	expectPrintedJSX(t, "// @jsxRuntime automatic @jsx h\n<a/>", "import { jsx } from \"react/jsx-runtime\";\n/* @__PURE__ */ jsx(\"a\", {});\n")
+	expectParseErrorJSX(t, "// @jsxRuntime automatic @jsx h\n<a/>", "<stdin>: WARNING: The JSX factory cannot be set when using React's \"automatic\" JSX transform\n")
+
+	expectPrintedJSX(t, "// @jsxRuntime automatic @jsxFrag f\n<></>", "import { Fragment, jsx } from \"react/jsx-runtime\";\n/* @__PURE__ */ jsx(Fragment, {});\n")
+	expectParseErrorJSX(t, "// @jsxRuntime automatic @jsxFrag f\n<></>", "<stdin>: WARNING: The JSX fragment cannot be set when using React's \"automatic\" JSX transform\n")
+}
+
+func TestJSXSideEffects(t *testing.T) {
+	expectPrintedJSX(t, "<a/>", "/* @__PURE__ */ React.createElement(\"a\", null);\n")
+	expectPrintedJSX(t, "<></>", "/* @__PURE__ */ React.createElement(React.Fragment, null);\n")
+
+	expectPrintedJSXSideEffects(t, "<a/>", "React.createElement(\"a\", null);\n")
+	expectPrintedJSXSideEffects(t, "<></>", "React.createElement(React.Fragment, null);\n")
 }
 
 func TestPreserveOptionalChainParentheses(t *testing.T) {
@@ -4818,6 +5311,10 @@ func TestImportAssertions(t *testing.T) {
 	expectPrintedTarget(t, 2015, "import(x ? 'y' : 'z', {assert: {x: 1}})", "import(x ? \"y\" : \"z\");\n")
 	expectParseErrorTarget(t, 2015, "import(x ? 'y' : 'z', {assert: {x: foo()}})",
 		"<stdin>: ERROR: Using an arbitrary value as the second argument to \"import()\" is not possible in the configured target environment\n")
+
+	// Make sure there are no errors when bundling is disabled
+	expectParseError(t, "import { foo } from 'x' assert {type: 'json'}", "")
+	expectParseError(t, "export { foo } from 'x' assert {type: 'json'}", "")
 }
 
 func TestES5(t *testing.T) {
@@ -4937,6 +5434,8 @@ func TestES5(t *testing.T) {
 	expectParseErrorTarget(t, 5, "function* gen() {}",
 		"<stdin>: ERROR: Transforming generator functions to the configured target environment is not supported yet\n")
 	expectParseErrorTarget(t, 5, "(function* () {});",
+		"<stdin>: ERROR: Transforming generator functions to the configured target environment is not supported yet\n")
+	expectParseErrorTarget(t, 5, "({ *foo() {} });",
 		"<stdin>: ERROR: Transforming generator functions to the configured target environment is not supported yet\n")
 }
 

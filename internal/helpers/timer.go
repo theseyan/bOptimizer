@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/theseyan/boptimizer/internal/logger"
+	"github.com/evanw/esbuild/internal/logger"
 )
 
 type Timer struct {
@@ -89,6 +89,6 @@ func (t *Timer) Log(log logger.Log) {
 		}
 	}
 
-	log.AddWithNotes(logger.Info, nil, logger.Range{},
+	log.AddIDWithNotes(logger.MsgID_None, logger.Info, nil, logger.Range{},
 		"Timing information (times may not nest hierarchically due to parallelism)", notes)
 }

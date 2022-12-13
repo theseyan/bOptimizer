@@ -3,7 +3,7 @@ package cache
 import (
 	"sync"
 
-	"github.com/theseyan/boptimizer/internal/fs"
+	"github.com/evanw/esbuild/internal/fs"
 )
 
 // This cache uses information from the "stat" syscall to try to avoid re-

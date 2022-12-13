@@ -4,7 +4,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/theseyan/boptimizer/internal/helpers"
+	"github.com/evanw/esbuild/internal/helpers"
 )
 
 type D uint16
