@@ -30,12 +30,15 @@ func build(entry *C.char, out *C.char, externals *C.char) *C.char {
 		Bundle:		 true,
 		Platform:    api.PlatformNode,
 		External:	 allExternals,
-		Format:		 api.FormatESModule,
+		Format:		 api.FormatCommonJS,
 		TreeShaking: api.TreeShakingTrue,
 		MinifyWhitespace:  true,
 		MinifyIdentifiers: true,
 		MinifySyntax:      true,
 		Metafile: true,
+		Loader: map[string]api.Loader{
+			".node": api.LoaderNone,
+		},
 		LogOverride: map[string]api.LogLevel{
 			"unsupported-dynamic-import": api.LogLevelWarning,
 			"unsupported-require-call": api.LogLevelWarning,
