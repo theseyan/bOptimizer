@@ -16,12 +16,19 @@ type BuildResponse struct {
 }
 
 //export build
-func build(entry *C.char, out *C.char, externals *C.char) *C.char {
+func build(entry *C.char, out *C.char, format *C.char, externals *C.char) *C.char {
 	// This may be incomplete
-	bunModules := []string{"bun:jsc", "bun:ffi", "bun:sqlite", "bun:wrap", "bun:main"}
+	bunModules := []string{"bun", "bun:jsc", "bun:ffi", "bun:sqlite", "bun:wrap", "bun:main"}
 	extString := C.GoString(externals)
 	extSlice := strings.Split(extString, ",");
 	allExternals := append(bunModules, extSlice...);
+	formatString := C.GoString(format);
+	formatToUse := api.FormatCommonJS;
+
+	// Force ESM format
+	if (formatString == "esm") {
+		formatToUse = api.FormatESModule
+	}
 
 	result := api.Build(api.BuildOptions{
 		EntryPoints: []string{C.GoString(entry)},
@@ -30,14 +37,14 @@ func build(entry *C.char, out *C.char, externals *C.char) *C.char {
 		Bundle:		 true,
 		Platform:    api.PlatformNode,
 		External:	 allExternals,
-		Format:		 api.FormatCommonJS,
+		Format:		 formatToUse,
 		TreeShaking: api.TreeShakingTrue,
 		MinifyWhitespace:  true,
 		MinifyIdentifiers: true,
 		MinifySyntax:      true,
 		Metafile: true,
 		Loader: map[string]api.Loader{
-			".node": api.LoaderNone,
+			".node": api.LoaderBinary,
 		},
 		LogOverride: map[string]api.LogLevel{
 			"unsupported-dynamic-import": api.LogLevelWarning,
@@ -64,6 +71,6 @@ func build(entry *C.char, out *C.char, externals *C.char) *C.char {
 }
 
 func main() {
-	// result := C.GoString(build(C.CString("test/myapp/index.js"), C.CString("bundle.js"), C.CString("")));
+	// result := C.GoString(build(C.CString("test/myapp/index.js"), C.CString("bundle.js"), C.CString("cjs"), C.CString("")));
 	// println(result)
 }
