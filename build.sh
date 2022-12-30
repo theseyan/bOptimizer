@@ -24,11 +24,11 @@ fi
 
 # Build for x86_64-linux
 echo "Building for x86_64-linux..."
-CGO_ENABLED=1 GOOS=linux GOARCH=amd64 CC="zig cc -target x86_64-linux" CXX="zig c++ -target x86_64-linux" go build -buildmode=c-archive -o build/out/libboptimizer-x86_64-linux.a -ldflags="-w" src/main.go
+CGO_ENABLED=1 GOOS=linux GOARCH=amd64 CC="zig cc -target x86_64-linux-gnu" CXX="zig c++ -target x86_64-linux-gnu" go build -buildmode=c-archive -o build/out/libboptimizer-x86_64-linux.a -ldflags="-w" src/main.go
 
 # Build for aarch64-linux
 echo "Building for aarch64-linux..."
-CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC="zig cc -target aarch64-linux" CXX="zig c++ -target aarch64-linux" go build -buildmode=c-archive -o build/out/libboptimizer-aarch64-linux.a -ldflags="-w" src/main.go
+CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC="zig cc -target aarch64-linux-gnu" CXX="zig c++ -target aarch64-linux-gnu" go build -buildmode=c-archive -o build/out/libboptimizer-aarch64-linux.a -ldflags="-w" src/main.go
 
 # Build for aarch64-macos
 echo "Building for aarch64-macos..."
